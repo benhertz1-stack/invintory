@@ -1,28 +1,38 @@
 import { useQuery } from '@tanstack/react-query';
-import { getCollection } from '../lib/api';
-import { useAuth } from '../context/AuthContext';
-import { Label } from '../types';
+import { getWines, getWine } from '../lib/api';
+import { Wine } from '../types';
 
-export function useCollection() {
-  const { collectionId } = useAuth();
-
+export function useWines() {
   return useQuery({
-    queryKey: ['collection', collectionId],
-    queryFn: () => getCollection(collectionId!),
-    enabled: !!collectionId,
+    queryKey: ['wines'],
+    queryFn: getWines,
     staleTime: 5 * 60 * 1000,
   });
 }
 
-export function buildCollectionSummary(labels: Label[], collectionName: string): string {
-  const lines: string[] = [`Collection: ${collectionName}`, ''];
-  for (const label of labels) {
-    const active = label.bottles.filter((b) => !b.consumed);
-    if (active.length === 0) continue;
-    const score = label.wsScore ? ` (WS ${label.wsScore})` : '';
-    lines.push(
-      `- ${label.wine.winery} "${label.wine.name}" ${label.year}${score} — ${label.wine.wineType}, ${label.wine.region || label.wine.countryCode} — ${active.length} bottle(s)`
-    );
-  }
-  return lines.join('\n');
+export function useWine(id: string) {
+  return useQuery({
+    queryKey: ['wine', id],
+    queryFn: () => getWine(id),
+    staleTime: 5 * 60 * 1000,
+    enabled: !!id,
+  });
+}
+
+export function drinkWindowStatus(
+  wine: Pick<Wine, 'drinkWindowStart' | 'drinkWindowEnd'>
+): 'hold' | 'drink' | 'past' | 'unknown' {
+  const year = new Date().getFullYear();
+  if (!wine.drinkWindowStart || !wine.drinkWindowEnd) return 'unknown';
+  if (year < wine.drinkWindowStart) return 'hold';
+  if (year > wine.drinkWindowEnd) return 'past';
+  return 'drink';
+}
+
+export function collectionTotalValue(wines: Wine[]): number {
+  return wines.reduce((total, w) => {
+    const bottles = w.bottles ?? [];
+    const active = bottles.filter((b) => !b.consumed);
+    return total + active.reduce((s, b) => s + (b.marketPrice ?? 0), 0);
+  }, 0);
 }

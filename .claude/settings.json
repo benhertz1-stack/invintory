@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "wine-inventory": {
+      "command": "node",
+      "args": ["dist-server/mcp.js"],
+      "env": {
+        "GOOGLE_CLOUD_PROJECT": "invintory-495823"
+      }
+    }
+  }
+}

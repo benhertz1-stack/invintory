@@ -1,6 +1,5 @@
 import { useState, useRef, useEffect, FormEvent } from 'react';
 import { Send, Sparkles, Bot, User, Loader } from 'lucide-react';
-import { useCollection, buildCollectionSummary } from '../hooks/useCollection';
 import { askAdvisor } from '../lib/api';
 
 interface Message {
@@ -11,13 +10,12 @@ interface Message {
 const SUGGESTIONS = [
   'What should I open for a dinner party this weekend?',
   'Which of my wines pair well with grilled salmon?',
-  'What are my highest-rated bottles?',
-  'Which wines should I drink soon before they peak?',
+  'What are my best bottles to drink now?',
+  'Which wines should I hold for a few more years?',
   'What red wine would go with a beef roast?',
 ];
 
 export default function Advisor() {
-  const { data: collection } = useCollection();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -28,20 +26,15 @@ export default function Advisor() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, loading]);
 
-  const collectionSummary = collection
-    ? buildCollectionSummary(collection.labels, collection.name)
-    : '';
-
   async function send(question: string) {
     if (!question.trim() || loading) return;
-    const userMsg: Message = { role: 'user', content: question.trim() };
-    setMessages((prev) => [...prev, userMsg]);
+    setMessages((prev) => [...prev, { role: 'user', content: question.trim() }]);
     setInput('');
     setLoading(true);
     setError(null);
 
     try {
-      const answer = await askAdvisor(question.trim(), collectionSummary);
+      const answer = await askAdvisor(question.trim());
       setMessages((prev) => [...prev, { role: 'assistant', content: answer }]);
     } catch {
       setError('Failed to get a response. Make sure ANTHROPIC_API_KEY is set on the server.');
@@ -57,7 +50,6 @@ export default function Advisor() {
 
   return (
     <div className="flex flex-col h-screen max-h-screen">
-      {/* Header */}
       <div className="px-8 py-5 border-b border-slate-800 shrink-0">
         <div className="flex items-center gap-2.5">
           <Sparkles size={20} className="text-purple-400" />
@@ -65,11 +57,9 @@ export default function Advisor() {
         </div>
         <p className="text-slate-400 text-sm mt-1">
           Ask Claude to recommend wines from your collection
-          {collection ? ` (${collection.labels.length} labels loaded)` : ''}
         </p>
       </div>
 
-      {/* Messages */}
       <div className="flex-1 overflow-y-auto px-8 py-6 space-y-5">
         {messages.length === 0 && !loading && (
           <div className="flex flex-col items-center justify-center h-full gap-6 py-10">
@@ -97,10 +87,7 @@ export default function Advisor() {
         )}
 
         {messages.map((msg, i) => (
-          <div
-            key={i}
-            className={`flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}
-          >
+          <div key={i} className={`flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
             <div
               className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${
                 msg.role === 'user' ? 'bg-wine-700' : 'bg-purple-800'
@@ -144,7 +131,6 @@ export default function Advisor() {
         <div ref={bottomRef} />
       </div>
 
-      {/* Input */}
       <div className="px-8 py-4 border-t border-slate-800 shrink-0">
         <form onSubmit={handleSubmit} className="flex gap-3">
           <input

@@ -1,7 +1,6 @@
 import { Link } from 'react-router-dom';
-import { Package, Wine, DollarSign, Star, Sparkles } from 'lucide-react';
-import { useAuth } from '../context/AuthContext';
-import { useCollection } from '../hooks/useCollection';
+import { Package, Wine, DollarSign, Clock, Sparkles } from 'lucide-react';
+import { useWines, drinkWindowStatus } from '../hooks/useCollection';
 
 function StatCard({
   label,
@@ -28,31 +27,17 @@ function StatCard({
 }
 
 export default function Dashboard() {
-  const { profile } = useAuth();
-  const { data: collection, isLoading, error } = useCollection();
+  const { data: wines, isLoading, error } = useWines();
 
-  const totalBottles =
-    collection?.labels.reduce((s, l) => s + l.bottles.filter((b) => !b.consumed).length, 0) ?? 0;
-  const unpricedBottles =
-    collection?.labels.reduce(
-      (s, l) => s + l.bottles.filter((b) => !b.price && !b.consumed).length,
-      0
-    ) ?? 0;
-  const scored = collection?.labels.filter((l) => l.wsScore) ?? [];
-  const avgScore =
-    scored.length > 0
-      ? Math.round(scored.reduce((s, l) => s + (l.wsScore ?? 0), 0) / scored.length)
-      : '—';
+  const totalBottles = wines?.reduce((s, w) => s + (w.bottleCount ?? 0), 0) ?? 0;
+  const totalValue = wines?.reduce((s, w) => s + (w.marketValue ?? 0), 0) ?? 0;
+  const peakCount = wines?.filter((w) => drinkWindowStatus(w) === 'drink').length ?? 0;
 
   return (
     <div className="p-8 max-w-5xl">
       <div className="mb-7">
-        <h1 className="text-2xl font-bold text-white">
-          Welcome back, {profile?.firstName ?? 'Collector'}
-        </h1>
-        <p className="text-slate-400 mt-1 text-sm">
-          {collection?.name ?? 'Loading your collection...'}
-        </p>
+        <h1 className="text-2xl font-bold text-white">Dashboard</h1>
+        <p className="text-slate-400 mt-1 text-sm">Your wine collection at a glance</p>
       </div>
 
       {isLoading && (
@@ -61,20 +46,40 @@ export default function Dashboard() {
 
       {error && (
         <div className="bg-red-900/30 border border-red-800 text-red-300 rounded-lg px-4 py-3 mb-6 text-sm">
-          Failed to load collection. Your session may have expired — sign out and back in.
+          Failed to load collection.
         </div>
       )}
 
-      {collection && (
+      {wines && (
         <>
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-7">
-            <StatCard label="Active Bottles" value={totalBottles} icon={Package} accent="bg-slate-700" />
-            <StatCard label="Wine Labels" value={collection.labels.length} icon={Wine} accent="bg-wine-700" />
-            <StatCard label="Unpriced" value={unpricedBottles} icon={DollarSign} accent="bg-amber-700" />
-            <StatCard label="Avg WS Score" value={avgScore} icon={Star} accent="bg-emerald-700" />
+            <StatCard
+              label="Active Bottles"
+              value={totalBottles}
+              icon={Package}
+              accent="bg-slate-700"
+            />
+            <StatCard
+              label="Wine Labels"
+              value={wines.length}
+              icon={Wine}
+              accent="bg-wine-700"
+            />
+            <StatCard
+              label="Market Value"
+              value={`$${totalValue.toFixed(0)}`}
+              icon={DollarSign}
+              accent="bg-emerald-700"
+            />
+            <StatCard
+              label="Drink Now"
+              value={peakCount}
+              icon={Clock}
+              accent="bg-amber-700"
+            />
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mb-8">
             <Link
               to="/collection"
               className="bg-slate-900 border border-slate-800 hover:border-wine-700 rounded-xl p-5 transition-colors group"
@@ -83,25 +88,19 @@ export default function Dashboard() {
                 Browse Collection →
               </h2>
               <p className="text-slate-500 mt-1 text-sm">
-                {collection.labels.length} labels · {totalBottles} bottles
+                {wines.length} labels · {totalBottles} bottles
               </p>
             </Link>
 
             <Link
-              to="/update-prices"
-              className={`bg-slate-900 rounded-xl p-5 transition-colors group border ${
-                unpricedBottles > 0
-                  ? 'border-amber-800/60 hover:border-amber-600'
-                  : 'border-slate-800 hover:border-slate-600'
-              }`}
+              to="/collection"
+              className="bg-slate-900 border border-amber-800/50 hover:border-amber-600 rounded-xl p-5 transition-colors group"
             >
               <h2 className="font-semibold text-white group-hover:text-amber-400 transition-colors">
-                Update Prices →
+                Drink Now →
               </h2>
               <p className="text-slate-500 mt-1 text-sm">
-                {unpricedBottles > 0
-                  ? `${unpricedBottles} bottle${unpricedBottles !== 1 ? 's' : ''} missing prices`
-                  : 'All bottles priced'}
+                {peakCount} wine{peakCount !== 1 ? 's' : ''} in peak window
               </p>
             </Link>
 
@@ -119,28 +118,30 @@ export default function Dashboard() {
             </Link>
           </div>
 
-          {collection.cellars.length > 0 && (
-            <div className="mt-8">
+          {wines.length > 0 && (
+            <div>
               <h2 className="text-sm font-semibold text-slate-300 mb-3 uppercase tracking-wide">
-                Cellars
+                By Region
               </h2>
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
-                {collection.cellars.map((cellar) => {
-                  const count = collection.labels.reduce(
-                    (s, l) =>
-                      s + l.bottles.filter((b) => b.cellarId === cellar.id && !b.consumed).length,
-                    0
-                  );
-                  return (
+                {Object.entries(
+                  wines.reduce<Record<string, number>>((acc, w) => {
+                    const r = w.region || w.country || 'Unknown';
+                    acc[r] = (acc[r] ?? 0) + (w.bottleCount ?? 0);
+                    return acc;
+                  }, {})
+                )
+                  .sort((a, b) => b[1] - a[1])
+                  .slice(0, 8)
+                  .map(([region, count]) => (
                     <div
-                      key={cellar.id}
+                      key={region}
                       className="bg-slate-900 border border-slate-800 rounded-lg px-4 py-3"
                     >
-                      <p className="text-sm font-medium text-slate-200 truncate">{cellar.name}</p>
+                      <p className="text-sm font-medium text-slate-200 truncate">{region}</p>
                       <p className="text-xs text-slate-500 mt-0.5">{count} bottles</p>
                     </div>
-                  );
-                })}
+                  ))}
               </div>
             </div>
           )}
