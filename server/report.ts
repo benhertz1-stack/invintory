@@ -30,6 +30,14 @@ export interface ReportOptions {
   baseUrl: string;
   /** Testing aid: only look up prices for the first N wines. */
   limitPriceLookups?: number;
+  /**
+   * Pre-researched data supplied by an external agent (e.g. a scheduled Claude
+   * routine running on the owner's subscription). When present, no Anthropic
+   * API calls are made for that section.
+   */
+  prices?: PriceLookup[] | null;
+  picks?: Pick[] | null;
+  marketNotes?: string[] | null;
 }
 
 export interface AlertRow {
@@ -219,12 +227,53 @@ export function computeAlerts(wines: WineDoc[], year = new Date().getFullYear())
   return { pastPeak, lastCall, opening, unknownWindow };
 }
 
-interface PriceLookup {
+export interface PriceLookup {
   id: string;
   price_usd: number | null;
   confidence?: string;
   source?: string;
   note?: string;
+}
+
+/** Write usable looked-up prices onto the active bottles of the given wines. */
+async function persistPrices(db: Firestore, wines: WineDoc[], results: Map<string, PriceLookup>): Promise<number> {
+  const checkedAt = nowIso();
+  let updates = 0;
+  for (const w of wines) {
+    const r = results.get(w.id);
+    if (!r || r.price_usd == null || r.confidence === 'low') continue;
+    const bottles = w.bottles.map((b) => (b.consumed ? b : { ...b, marketPrice: r.price_usd, currency: 'USD' }));
+    await db.collection('wines').doc(w.id).update({ bottles, priceCheckedAt: checkedAt, priceSource: r.source ?? '', priceConfidence: r.confidence ?? '' });
+    w.bottles = bottles;
+    updates += 1;
+  }
+  console.log(`report: market prices updated on ${updates} wines`);
+  return updates;
+}
+
+function normalizeLookups(raw: PriceLookup[]): Map<string, PriceLookup> {
+  const map = new Map<string, PriceLookup>();
+  for (const p of raw) {
+    if (p && typeof p.id === 'string') {
+      map.set(p.id, { ...p, price_usd: typeof p.price_usd === 'number' && p.price_usd > 0 ? Math.round(p.price_usd * 100) / 100 : null });
+    }
+  }
+  return map;
+}
+
+export function sanitizePicks(raw: unknown): Pick[] {
+  if (!Array.isArray(raw)) return [];
+  return (raw as Array<Record<string, unknown>>).slice(0, 6).map((p) => ({
+    name: String(p.name ?? ''),
+    producer: String(p.producer ?? ''),
+    vintage: String(p.vintage ?? ''),
+    region: String(p.region ?? ''),
+    grapes: String(p.grapes ?? ''),
+    approx_price_usd: typeof p.approx_price_usd === 'number' ? p.approx_price_usd : null,
+    why: String(p.why ?? ''),
+    value_note: String(p.value_note ?? ''),
+    where_to_buy: String(p.where_to_buy ?? ''),
+  }));
 }
 
 async function refreshPrices(
@@ -271,18 +320,7 @@ async function refreshPrices(
     }
   }
 
-  // Persist: update active bottles' market price where we got a usable number
-  const checkedAt = nowIso();
-  let updates = 0;
-  for (const w of targets) {
-    const r = results.get(w.id);
-    if (!r || r.price_usd == null || r.confidence === 'low') continue;
-    const bottles = w.bottles.map((b) => (b.consumed ? b : { ...b, marketPrice: r.price_usd, currency: 'USD' }));
-    await db.collection('wines').doc(w.id).update({ bottles, priceCheckedAt: checkedAt, priceSource: r.source ?? '', priceConfidence: r.confidence ?? '' });
-    w.bottles = bottles;
-    updates += 1;
-  }
-  console.log(`report: market prices updated on ${updates} wines`);
+  await persistPrices(db, targets, results);
   return results;
 }
 
@@ -341,19 +379,7 @@ async function recommendPurchases(
       warnings.push('Recommendations returned no parsable data.');
       return { picks: [], marketNotes: [] };
     }
-    const picks = (Array.isArray(parsed.picks) ? parsed.picks : []).slice(0, 6).map((p) => ({
-      name: String(p.name ?? ''),
-      producer: String(p.producer ?? ''),
-      vintage: String(p.vintage ?? ''),
-      region: String(p.region ?? ''),
-      grapes: String(p.grapes ?? ''),
-      approx_price_usd: typeof p.approx_price_usd === 'number' ? p.approx_price_usd : null,
-      why: String(p.why ?? ''),
-      value_note: String(p.value_note ?? ''),
-      where_to_buy: String(p.where_to_buy ?? ''),
-    }));
-    const marketNotes = (Array.isArray(parsed.market_notes) ? parsed.market_notes : []).map(String).slice(0, 6);
-    return { picks, marketNotes };
+    return { picks: sanitizePicks(parsed.picks), marketNotes: (Array.isArray(parsed.market_notes) ? parsed.market_notes : []).map(String).slice(0, 6) };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     warnings.push(`Recommendations failed: ${msg}`);
@@ -541,12 +567,20 @@ export async function runMonthlyReport(db: Firestore, opts: ReportOptions): Prom
   const since = lastReport?.createdAt ?? new Date(Date.now() - 31 * 24 * 3600 * 1000).toISOString();
   const previousSnapshot = snapshotsSnap.docs.map((d) => d.data() as PriceSnapshot).find((s) => s.month !== month) ?? null;
 
+  const supplied = { prices: !!opts.prices?.length, picks: !!opts.picks?.length };
   const client = anthropicClient();
-  if (!client && (opts.refreshPrices || opts.recommend)) warnings.push('ANTHROPIC_API_KEY is not configured, so prices were not refreshed and no recommendations were made.');
+  if (!client && ((opts.refreshPrices && !supplied.prices) || (opts.recommend && !supplied.picks)))
+    warnings.push('ANTHROPIC_API_KEY is not configured, so prices were not refreshed and no recommendations were made.');
 
-  // 1. Prices (optionally refreshed on the web)
+  // 1. Prices — supplied by an external agent, or looked up here via the API
   let lookups = new Map<string, PriceLookup>();
-  if (client && opts.refreshPrices) lookups = await refreshPrices(db, client, wines, opts.limitPriceLookups, warnings);
+  if (supplied.prices) {
+    lookups = normalizeLookups(opts.prices!);
+    await persistPrices(db, wines, lookups);
+    console.log(`report: applied ${lookups.size} supplied price lookups`);
+  } else if (client && opts.refreshPrices) {
+    lookups = await refreshPrices(db, client, wines, opts.limitPriceLookups, warnings);
+  }
 
   const active = wines.filter((w) => activeBottles(w).length > 0);
   const prices: PriceRow[] = active
@@ -605,10 +639,15 @@ export async function runMonthlyReport(db: Firestore, opts: ReportOptions): Prom
     .slice(0, 8)
     .map((p) => `${p.label}: ${money(p.previousPrice)} → ${money(p.price)} (${p.change! > 0 ? '+' : ''}${Math.round((p.change! / p.previousPrice!) * 100)}%)`);
 
-  // 4. Buying ideas + market notes
+  // 4. Buying ideas + market notes — supplied, or researched here via the API
   let picks: Pick[] = [];
   let marketNotes: string[] = [];
-  if (client && opts.recommend) ({ picks, marketNotes } = await recommendPurchases(client, wines, tastings, prefs.notes, warnings));
+  if (supplied.picks) {
+    picks = sanitizePicks(opts.picks);
+    marketNotes = (opts.marketNotes ?? []).map(String).slice(0, 6);
+  } else if (client && opts.recommend) {
+    ({ picks, marketNotes } = await recommendPurchases(client, wines, tastings, prefs.notes, warnings));
+  }
 
   const summary: ReportSummary = {
     month,
@@ -617,7 +656,7 @@ export async function runMonthlyReport(db: Firestore, opts: ReportOptions): Prom
     totals,
     alerts,
     prices,
-    priceRefreshed: !!(client && opts.refreshPrices),
+    priceRefreshed: supplied.prices || !!(client && opts.refreshPrices),
     activity: { added, consumed, tastings: tastingLines, priceMoves },
     picks,
     marketNotes,

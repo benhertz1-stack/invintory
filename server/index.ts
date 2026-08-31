@@ -297,6 +297,39 @@ const reportGuard = (req: Request, res: Response, next: NextFunction): void => {
   guard(req, res, next);
 };
 
+/** Everything an external research agent needs to build the report data. */
+app.get('/api/reports/context', reportGuard, async (_req, res) => {
+  try {
+    const [wines, tastings, prefs] = await Promise.all([getAllWines(db), getTastings(db), getPreferences(db)]);
+    const active = wines.filter((w) => activeBottles(w).length > 0);
+    res.json({
+      month: new Date().toISOString().slice(0, 7),
+      wines: active.map((w) => {
+        const av = activeBottles(w);
+        const priced = av.filter((bt) => bt.marketPrice);
+        return {
+          id: w.id,
+          vintage: w.vintage,
+          producer: w.producer,
+          name: w.name,
+          region: w.region,
+          country: w.country,
+          type: w.wineType,
+          grapes: w.grapes,
+          bottles: av.length,
+          lastPrice: priced.length ? Math.round((priced.reduce((s, bt) => s + (bt.marketPrice ?? 0), 0) / priced.length) * 100) / 100 : null,
+          drinkWindow: w.drinkWindowStart && w.drinkWindowEnd ? `${w.drinkWindowStart}-${w.drinkWindowEnd}` : null,
+        };
+      }),
+      tastings: tastings.map((t) => ({ wine: `${t.vintage} ${t.wineName}`, rating: t.rating, notes: t.notes, wouldBuyAgain: t.wouldBuyAgain })),
+      preferences: prefs.notes,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to build report context' });
+  }
+});
+
 app.post('/api/reports/run', reportGuard, async (req, res) => {
   const b = (req.body ?? {}) as Record<string, unknown>;
   req.setTimeout(0);
@@ -307,6 +340,9 @@ app.post('/api/reports/run', reportGuard, async (req, res) => {
       recommend: b.recommend !== false,
       baseUrl: baseUrlOf(req),
       limitPriceLookups: typeof b.limitPriceLookups === 'number' ? b.limitPriceLookups : undefined,
+      prices: Array.isArray(b.prices) ? (b.prices as never) : undefined,
+      picks: Array.isArray(b.picks) ? (b.picks as never) : undefined,
+      marketNotes: Array.isArray(b.market_notes ?? b.marketNotes) ? ((b.market_notes ?? b.marketNotes) as never) : undefined,
     });
     res.json({
       ok: true,
