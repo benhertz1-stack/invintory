@@ -8,3 +8,4 @@ dist-server/
 .claude/
 scripts/*.png
 *.png
+test-mcp.bat
