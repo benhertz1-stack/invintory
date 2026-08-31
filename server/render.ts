@@ -69,8 +69,8 @@ export function renderFridgeSvg(o: RenderOpts): string {
     `<stop offset="100%" stop-color="#f59e0b" stop-opacity="0"/>`,
     `</radialGradient>`,
     `<linearGradient id="tray" x1="0" y1="0" x2="0" y2="1">`,
-    `<stop offset="0%" stop-color="#6b4a1e"/>`,
-    `<stop offset="100%" stop-color="#3b2a12"/>`,
+    `<stop offset="0%" stop-color="#f7ecd2"/>`,
+    `<stop offset="100%" stop-color="#e3d3ad"/>`,
     `</linearGradient>`,
     `<linearGradient id="steel" x1="0" y1="0" x2="1" y2="0">`,
     `<stop offset="0%" stop-color="#1c1c24"/>`,
@@ -125,7 +125,7 @@ export function renderFridgeSvg(o: RenderOpts): string {
     // Divider below the shelf
     if (idx < rows.length - 1) {
       out.push(
-        `<rect x="${CAB_X + 6}" y="${row.y + row.h + 1}" width="${CAB_W - 12}" height="4" rx="1" fill="#3b2a12"/>`,
+        `<rect x="${CAB_X + 6}" y="${row.y + row.h + 1}" width="${CAB_W - 12}" height="5" rx="1.5" fill="#e8dcbd"/>`,
       );
     }
 
@@ -146,8 +146,8 @@ export function renderFridgeSvg(o: RenderOpts): string {
       // Cast shadow, then tray (trapezoid = perspective of a pulled-out shelf)
       out.push(
         `<polygon points="${xl - flare + 6},${yFront + 8} ${xr + flare + 6},${yFront + 8} ${xr + 6},${yBack + 8} ${xl + 6},${yBack + 8}" fill="#000000" opacity="0.5"/>`,
-        `<polygon points="${xl},${yBack} ${xr},${yBack} ${xr + flare},${yFront} ${xl - flare},${yFront}" fill="url(#tray)" stroke="#8a6230" stroke-width="1.5"/>`,
-        `<rect x="${xl - flare}" y="${yFront - 2}" width="${xr - xl + flare * 2}" height="5" rx="1.5" fill="#8a6230"/>`,
+        `<polygon points="${xl},${yBack} ${xr},${yBack} ${xr + flare},${yFront} ${xl - flare},${yFront}" fill="url(#tray)" stroke="#c9b686" stroke-width="1.5"/>`,
+        `<rect x="${xl - flare}" y="${yFront - 2}" width="${xr - xl + flare * 2}" height="5" rx="1.5" fill="#cdbc8f"/>`,
         `<text x="${xr + 4}" y="${row.y + 9}" text-anchor="end" font-family="${FONT}" font-size="10" fill="#fbbf24">shelf ${s.row} — pulled out</text>`,
       );
       cy = yBack + (yFront - yBack) * 0.55;
@@ -167,8 +167,8 @@ export function renderFridgeSvg(o: RenderOpts): string {
         out.push(`<circle cx="${fmt(cx)}" cy="${fmt(cy)}" r="${fmt(rr * 2.4)}" fill="url(#glow)"/>`);
       }
       // Bottle end / empty slot
-      const fill = isHi ? '#3a2600' : isOcc ? '#3a0a0a' : '#0f0f22';
-      const stroke = isHi ? '#fbbf24' : isOcc ? '#8b1a1a' : '#2a2a48';
+      const fill = isHi ? '#3a2600' : isOcc ? '#14231c' : '#0f0f22';
+      const stroke = isHi ? '#fbbf24' : isOcc ? '#3e6a52' : '#2a2a48';
       out.push(
         `<circle cx="${fmt(cx + 1)}" cy="${fmt(cy + 1.5)}" r="${fmt(rr)}" fill="#000" opacity="0.5"/>`,
         `<circle cx="${fmt(cx)}" cy="${fmt(cy)}" r="${fmt(rr)}" fill="${fill}" stroke="${stroke}" stroke-width="${isHi ? 3 : 1.4}"/>`,
@@ -180,8 +180,8 @@ export function renderFridgeSvg(o: RenderOpts): string {
         );
       } else if (isOcc) {
         out.push(
-          `<circle cx="${fmt(cx)}" cy="${fmt(cy)}" r="${fmt(rr * 0.62)}" fill="none" stroke="#991b1b" stroke-width="1" opacity="0.7"/>`,
-          `<circle cx="${fmt(cx)}" cy="${fmt(cy)}" r="${fmt(rr * 0.28)}" fill="#7f1d1d"/>`,
+          `<circle cx="${fmt(cx)}" cy="${fmt(cy)}" r="${fmt(rr * 0.62)}" fill="none" stroke="#4d7a60" stroke-width="1" opacity="0.6"/>`,
+          `<circle cx="${fmt(cx)}" cy="${fmt(cy)}" r="${fmt(rr * 0.3)}" fill="#7a1226"/>`,
         );
       }
     }
@@ -191,7 +191,7 @@ export function renderFridgeSvg(o: RenderOpts): string {
   const ly = cabBottom + 34;
   const legend: Array<[string, string, string]> = [
     ['#fbbf24', '#fbbf24', 'your bottle'],
-    ['#3a0a0a', '#8b1a1a', 'occupied'],
+    ['#14231c', '#3e6a52', 'other bottles'],
     ['#0f0f22', '#2a2a48', 'empty'],
   ];
   let lx = CAB_X;

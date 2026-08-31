@@ -1,4 +1,4 @@
-import { Canvas, useFrame } from '@react-three/fiber';
+import { Canvas, useFrame, type ThreeEvent } from '@react-three/fiber';
 import { OrbitControls, Html } from '@react-three/drei';
 import { useMemo, useRef } from 'react';
 import * as THREE from 'three';
@@ -19,39 +19,96 @@ interface Props {
   hideChrome?: boolean;
 }
 
-const SHELF_H = 0.24;
-const DIVIDER_H = 0.045;
+// ── Dimensions (scene units ≈ metres × ~2) ───────────────────────────────────
+
 const FRIDGE_W = 2.2;
-const FRIDGE_D = 0.88;
-const PULL_Z = 0.66;
+const FRIDGE_D = 1.0;
+const WALL = 0.06;
+const SHELF_PITCH = 0.3;
+const SLAB_T = 0.05;
+const PULL_OUT = FRIDGE_D * 1.02;
 
-// ── One bottle slot ───────────────────────────────────────────────────────────
+const CREAM = '#efe2bf';
+const CREAM_LIT = '#f7ebcd';
+const GLASS_GREEN = '#13231b';
+const CABINET = '#75757c';
 
-function BottleSlot({
+// ── Bottle geometry: lathe profile, axis along +z with the neck toward +z ────
+
+function makeBottleGeometry(r: number, length: number): THREE.LatheGeometry {
+  const pts: THREE.Vector2[] = [];
+  const bodyEnd = length * 0.6;
+  const shoulderEnd = length * 0.74;
+  const neckR = r * 0.32;
+  pts.push(new THREE.Vector2(0, 0));
+  pts.push(new THREE.Vector2(r * 0.82, 0));
+  pts.push(new THREE.Vector2(r, r * 0.18));
+  pts.push(new THREE.Vector2(r, bodyEnd));
+  for (let i = 1; i <= 6; i++) {
+    const t = i / 6;
+    pts.push(new THREE.Vector2(neckR + (r - neckR) * Math.cos((t * Math.PI) / 2), bodyEnd + (shoulderEnd - bodyEnd) * t));
+  }
+  pts.push(new THREE.Vector2(neckR, length - r * 0.08));
+  pts.push(new THREE.Vector2(neckR * 1.12, length - r * 0.08));
+  pts.push(new THREE.Vector2(neckR * 1.12, length));
+  pts.push(new THREE.Vector2(0, length));
+  const g = new THREE.LatheGeometry(pts, 28);
+  g.rotateX(Math.PI / 2); // lathe axis (y) → +z
+  g.translate(0, 0, -length / 2);
+  return g;
+}
+
+function useGlowTexture(): THREE.Texture {
+  return useMemo(() => {
+    const c = document.createElement('canvas');
+    c.width = c.height = 128;
+    const ctx = c.getContext('2d')!;
+    const g = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+    g.addColorStop(0, 'rgba(255,244,214,1)');
+    g.addColorStop(0.2, 'rgba(255,208,110,0.8)');
+    g.addColorStop(0.55, 'rgba(255,176,50,0.22)');
+    g.addColorStop(1, 'rgba(255,160,30,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 128, 128);
+    const t = new THREE.CanvasTexture(c);
+    t.colorSpace = THREE.SRGBColorSpace;
+    return t;
+  }, []);
+}
+
+// ── One bottle ────────────────────────────────────────────────────────────────
+
+function Bottle({
   x,
+  y,
+  geometry,
   r,
-  occupied,
+  length,
   highlighted,
+  glow,
   onClick,
 }: {
   x: number;
+  y: number;
+  geometry: THREE.LatheGeometry;
   r: number;
-  occupied: boolean;
+  length: number;
   highlighted: boolean;
+  glow: THREE.Texture;
   onClick?: () => void;
 }) {
-  const mat = useRef<THREE.MeshStandardMaterial>(null);
-  const face = useRef<THREE.MeshStandardMaterial>(null);
+  const mat = useRef<THREE.MeshPhysicalMaterial>(null);
+  const light = useRef<THREE.PointLight>(null);
   useFrame(({ clock }) => {
     if (!highlighted) return;
-    const pulse = 0.75 + 0.45 * Math.sin(clock.elapsedTime * 4);
-    if (mat.current) mat.current.emissiveIntensity = pulse;
-    if (face.current) face.current.emissiveIntensity = pulse * 1.6;
+    const p = 0.85 + 0.35 * Math.sin(clock.elapsedTime * 3.2);
+    if (mat.current) mat.current.emissiveIntensity = p;
+    if (light.current) light.current.intensity = 3 + p * 2.5;
   });
 
   const handlers = onClick
     ? {
-        onClick: (e: { stopPropagation: () => void }) => {
+        onClick: (e: ThreeEvent<MouseEvent>) => {
           e.stopPropagation();
           onClick();
         },
@@ -60,47 +117,38 @@ function BottleSlot({
       }
     : {};
 
-  if (!occupied && !highlighted) {
-    return (
-      <mesh position={[x, 0, FRIDGE_D / 2 - 0.04]} {...handlers}>
-        <ringGeometry args={[r - 0.012, r + 0.006, 24]} />
-        <meshStandardMaterial color="#1b1b3d" side={THREE.DoubleSide} />
-      </mesh>
-    );
-  }
-
   return (
-    <group position={[x, 0, 0]} {...handlers}>
-      {highlighted && <pointLight position={[0, 0.12, FRIDGE_D / 2 + 0.15]} intensity={5} color="#fbbf24" distance={1.4} />}
-      {/* Bottle body, lying on its side pointing at the viewer */}
-      <mesh rotation={[Math.PI / 2, 0, 0]} position={[0, 0, 0.02]}>
-        <cylinderGeometry args={[r, r, FRIDGE_D - 0.18, 22]} />
-        <meshStandardMaterial
+    <group position={[x, y, 0]}>
+      <mesh geometry={geometry} castShadow receiveShadow {...handlers}>
+        <meshPhysicalMaterial
           ref={mat}
-          color={highlighted ? '#3a2600' : '#1c0606'}
-          emissive={highlighted ? '#fbbf24' : '#3a0000'}
-          emissiveIntensity={highlighted ? 0.8 : 0.15}
-          roughness={0.35}
-          metalness={0.1}
+          color={highlighted ? '#a8781a' : GLASS_GREEN}
+          emissive={highlighted ? '#ffb43a' : '#000000'}
+          emissiveIntensity={highlighted ? 0.9 : 0}
+          roughness={0.22}
+          metalness={0.05}
+          clearcoat={0.85}
+          clearcoatRoughness={0.18}
         />
       </mesh>
-      {/* Punt / foil face toward the viewer */}
-      <mesh position={[0, 0, FRIDGE_D / 2 - 0.06]}>
-        <circleGeometry args={[r * 0.96, 22]} />
-        <meshStandardMaterial
-          ref={face}
-          color={highlighted ? '#fbbf24' : '#5a0f0f'}
-          emissive={highlighted ? '#fbbf24' : '#000000'}
-          emissiveIntensity={highlighted ? 1.2 : 0}
-          toneMapped={!highlighted}
-          side={THREE.DoubleSide}
-        />
+      {/* Foil capsule */}
+      <mesh position={[0, 0, length * 0.44]} rotation={[Math.PI / 2, 0, 0]}>
+        <cylinderGeometry args={[r * 0.37, r * 0.37, length * 0.1, 20]} />
+        <meshStandardMaterial color={highlighted ? '#ffd98a' : '#6e1224'} roughness={0.35} metalness={0.55} />
       </mesh>
+      {highlighted && (
+        <>
+          <pointLight ref={light} position={[0, r * 2.4, 0]} intensity={4} color="#ffc65e" distance={2.4} decay={2} />
+          <sprite scale={[r * 10, r * 10, 1]} position={[0, r * 0.8, 0]}>
+            <spriteMaterial map={glow} color="#ffd57a" transparent depthWrite={false} blending={THREE.AdditiveBlending} opacity={0.95} />
+          </sprite>
+        </>
+      )}
     </group>
   );
 }
 
-// ── One shelf (tray + bottles), slides forward when pulled ───────────────────
+// ── One shelf (slab + bottles); slides fully out when pulled ─────────────────
 
 function Shelf({
   shelf,
@@ -108,6 +156,7 @@ function Shelf({
   pulled,
   occupiedSet,
   highlight,
+  glow,
   onSlotClick,
 }: {
   shelf: FridgeShelf;
@@ -115,59 +164,64 @@ function Shelf({
   pulled: boolean;
   occupiedSet: Set<string>;
   highlight: Props['highlight'];
+  glow: THREE.Texture;
   onSlotClick?: Props['onSlotClick'];
 }) {
   const group = useRef<THREE.Group>(null);
   useFrame((_, dt) => {
     if (!group.current) return;
-    group.current.position.z = THREE.MathUtils.damp(group.current.position.z, pulled ? PULL_Z : 0, 4, dt);
+    group.current.position.z = THREE.MathUtils.damp(group.current.position.z, pulled ? PULL_OUT : 0, 3.5, dt);
   });
 
   const cols = Math.max(1, shelf.cols);
-  const slotW = (FRIDGE_W - 0.1) / cols;
-  const slotR = Math.min(slotW * 0.38, 0.082);
+  const innerW = FRIDGE_W - WALL * 2 - 0.08;
+  const slotW = innerW / cols;
+  const r = Math.min(slotW * 0.4, 0.095);
+  const length = Math.min(FRIDGE_D - 0.14, r * 8.4);
+  const geometry = useMemo(() => makeBottleGeometry(r, length), [r, length]);
+  const slabW = FRIDGE_W - WALL * 2 - 0.02;
+  const slabD = FRIDGE_D - 0.08;
+  const bottleY = SLAB_T / 2 + r;
 
   return (
     <group ref={group} position={[0, y, 0]}>
-      {/* Tray */}
-      <mesh position={[0, -SHELF_H / 2 + 0.015, 0]}>
-        <boxGeometry args={[FRIDGE_W - 0.08, 0.03, FRIDGE_D - 0.08]} />
-        <meshStandardMaterial color={pulled ? '#7a5424' : '#3b2a12'} roughness={0.9} />
-      </mesh>
-      {/* Side rails */}
-      {[-1, 1].map((s) => (
-        <mesh key={s} position={[s * (FRIDGE_W / 2 - 0.05), -SHELF_H / 2 + 0.045, 0]}>
-          <boxGeometry args={[0.02, 0.06, FRIDGE_D - 0.08]} />
-          <meshStandardMaterial color="#2a1e0a" />
-        </mesh>
-      ))}
-      {/* Front lip */}
-      <mesh position={[0, -SHELF_H / 2 + 0.04, FRIDGE_D / 2 - 0.04]}>
-        <boxGeometry args={[FRIDGE_W - 0.08, 0.05, 0.015]} />
-        <meshStandardMaterial color={pulled ? '#a5702f' : '#4a3416'} />
+      <mesh castShadow receiveShadow>
+        <boxGeometry args={[slabW, SLAB_T, slabD]} />
+        <meshStandardMaterial color={pulled ? CREAM_LIT : CREAM} roughness={0.85} metalness={0} />
       </mesh>
 
       {Array.from({ length: cols }, (_, i) => {
         const col = i + 1;
-        const x = -FRIDGE_W / 2 + 0.05 + i * slotW + slotW / 2;
+        const x = -innerW / 2 + i * slotW + slotW / 2;
         const key = `${shelf.row}-${col}`;
+        const occupied = occupiedSet.has(key);
+        const isHi = !!highlight && highlight.row === shelf.row && highlight.col === col;
+        const click = onSlotClick ? () => onSlotClick(shelf.row, col) : undefined;
+        if (occupied || isHi) {
+          return <Bottle key={key} x={x} y={bottleY} geometry={geometry} r={r} length={length} highlighted={isHi} glow={glow} onClick={click} />;
+        }
+        if (!click) return null;
+        // Invisible hit target so empty slots are clickable in the fridge browser
         return (
-          <BottleSlot
+          <mesh
             key={key}
-            x={x}
-            r={slotR}
-            occupied={occupiedSet.has(key)}
-            highlighted={!!highlight && highlight.row === shelf.row && highlight.col === col}
-            onClick={onSlotClick ? () => onSlotClick(shelf.row, col) : undefined}
-          />
+            position={[x, bottleY, 0]}
+            onClick={(e) => {
+              e.stopPropagation();
+              click();
+            }}
+            onPointerOver={() => (document.body.style.cursor = 'pointer')}
+            onPointerOut={() => (document.body.style.cursor = 'auto')}
+          >
+            <boxGeometry args={[slotW * 0.9, r * 2, slabD * 0.9]} />
+            <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+          </mesh>
         );
       })}
 
       {pulled && (
-        <Html position={[FRIDGE_W / 2 + 0.1, 0.02, FRIDGE_D / 2]} style={{ pointerEvents: 'none' }} zIndexRange={[10, 0]}>
-          <div className="px-2 py-0.5 rounded bg-amber-400 text-black text-xs font-semibold whitespace-nowrap shadow">
-            Shelf {shelf.row}
-          </div>
+        <Html position={[slabW / 2 + 0.08, 0.05, slabD / 2 - 0.1]} style={{ pointerEvents: 'none' }} zIndexRange={[10, 0]}>
+          <div className="px-2 py-0.5 rounded bg-amber-400 text-black text-xs font-semibold whitespace-nowrap shadow">Shelf {shelf.row}</div>
         </Html>
       )}
     </group>
@@ -183,87 +237,88 @@ function FridgeScene({
   pulledShelf,
   onSlotClick,
 }: Pick<Props, 'shelves' | 'occupiedSlots' | 'highlight' | 'pulledShelf' | 'onSlotClick'>) {
+  const glow = useGlowTexture();
   const occupiedSet = useMemo(() => new Set(occupiedSlots.map((s) => `${s.row}-${s.col}`)), [occupiedSlots]);
   const sorted = useMemo(() => [...shelves].sort((a, b) => a.row - b.row), [shelves]);
-  const totalH = useMemo(() => sorted.length * SHELF_H + (sorted.length - 1) * DIVIDER_H + 0.22, [sorted]);
-
-  const shelfYs = useMemo(() => {
-    const positions: number[] = [];
-    let y = totalH / 2 - SHELF_H / 2 - 0.11;
-    sorted.forEach((_, idx) => {
-      if (idx > 0) y -= DIVIDER_H;
-      positions.push(y);
-      y -= SHELF_H;
-    });
-    return positions;
-  }, [sorted, totalH]);
-
+  const n = sorted.length;
+  const totalH = n * SHELF_PITCH + 0.34;
+  const shelfYs = useMemo(() => sorted.map((_, i) => totalH / 2 - 0.22 - i * SHELF_PITCH - SHELF_PITCH * 0.55), [sorted, totalH]);
   const pulled = pulledShelf ?? highlight?.row ?? null;
+
+  const innerW = FRIDGE_W - WALL * 2;
+  const innerH = totalH - WALL * 2;
 
   return (
     <>
-      <ambientLight intensity={0.3} />
-      <pointLight position={[0, totalH + 1, 2.8]} intensity={1.3} color="#5ba3d9" />
-      <pointLight position={[1.8, 0.5, 2.6]} intensity={0.7} />
-      <pointLight position={[-1.8, -0.5, 2.6]} intensity={0.45} />
+      <ambientLight intensity={0.35} color="#ffe9d0" />
+      <directionalLight
+        position={[3.2, totalH * 0.9 + 2, 5]}
+        intensity={2.2}
+        color="#fff0d8"
+        castShadow
+        shadow-mapSize-width={2048}
+        shadow-mapSize-height={2048}
+        shadow-camera-left={-3}
+        shadow-camera-right={3}
+        shadow-camera-top={totalH}
+        shadow-camera-bottom={-totalH}
+        shadow-camera-near={0.5}
+        shadow-camera-far={20}
+        shadow-bias={-0.0004}
+      />
+      <directionalLight position={[-3, 1, 3]} intensity={0.5} color="#dfe6ff" />
+      {/* Interior lighting strips */}
+      {[0.8, 0.3, -0.2, -0.7].map((f, i) => (
+        <pointLight key={i} position={[0, totalH * f * 0.5, FRIDGE_D * 0.3]} intensity={0.9} color="#ffe2b8" distance={2.6} decay={2} />
+      ))}
 
-      {/* Outer shell */}
-      <mesh position={[0, 0, -0.07]}>
-        <boxGeometry args={[FRIDGE_W + 0.14, totalH + 0.14, FRIDGE_D + 0.14]} />
-        <meshStandardMaterial color="#17171b" metalness={0.75} roughness={0.25} />
+      {/* Cavity (dark interior seen through the open front) */}
+      <mesh position={[0, 0, -WALL / 2]}>
+        <boxGeometry args={[innerW, innerH, FRIDGE_D - WALL]} />
+        <meshStandardMaterial color="#08080c" roughness={1} side={THREE.BackSide} />
       </mesh>
-      {/* Cavity */}
-      <mesh>
-        <boxGeometry args={[FRIDGE_W, totalH, FRIDGE_D]} />
-        <meshStandardMaterial color="#03030c" />
-      </mesh>
-      {/* LED strip */}
-      <mesh position={[0, totalH / 2 - 0.04, FRIDGE_D / 2 - 0.005]}>
-        <boxGeometry args={[FRIDGE_W - 0.06, 0.025, 0.015]} />
-        <meshStandardMaterial color="#5ba3d9" emissive="#5ba3d9" emissiveIntensity={2.5} toneMapped={false} />
-      </mesh>
-      {/* Handle */}
-      <mesh position={[FRIDGE_W / 2 + 0.085, 0, FRIDGE_D / 2 - 0.01]}>
-        <boxGeometry args={[0.038, totalH * 0.55, 0.038]} />
-        <meshStandardMaterial color="#2a2a30" metalness={0.85} roughness={0.15} />
-      </mesh>
-      {/* Hinges */}
-      {[-totalH * 0.38, totalH * 0.38].map((hy, i) => (
-        <mesh key={i} position={[-(FRIDGE_W / 2 + 0.075), hy, 0]}>
-          <boxGeometry args={[0.05, 0.12, 0.06]} />
-          <meshStandardMaterial color="#1a1a1e" metalness={0.6} roughness={0.4} />
+
+      {/* Cabinet walls */}
+      {[
+        { pos: [0, totalH / 2 - WALL / 2, 0], size: [FRIDGE_W, WALL, FRIDGE_D] },
+        { pos: [0, -totalH / 2 + WALL / 2, 0], size: [FRIDGE_W, WALL, FRIDGE_D] },
+        { pos: [-FRIDGE_W / 2 + WALL / 2, 0, 0], size: [WALL, totalH, FRIDGE_D] },
+        { pos: [FRIDGE_W / 2 - WALL / 2, 0, 0], size: [WALL, totalH, FRIDGE_D] },
+        { pos: [0, 0, -FRIDGE_D / 2 + WALL / 2], size: [FRIDGE_W, totalH, WALL] },
+      ].map((w, i) => (
+        <mesh key={i} position={w.pos as [number, number, number]} receiveShadow>
+          <boxGeometry args={w.size as [number, number, number]} />
+          <meshStandardMaterial color={CABINET} roughness={0.55} metalness={0.25} />
         </mesh>
       ))}
 
-      {/* Static dividers between shelves */}
-      {sorted.map((shelf, idx) =>
-        idx > 0 ? (
-          <mesh key={`div-${shelf.row}`} position={[0, shelfYs[idx] + SHELF_H / 2 + DIVIDER_H / 2, -0.02]}>
-            <boxGeometry args={[FRIDGE_W - 0.06, DIVIDER_H, FRIDGE_D - 0.1]} />
-            <meshStandardMaterial color="#1c1408" roughness={0.95} />
-          </mesh>
-        ) : null,
-      )}
-
-      {sorted.map((shelf, idx) => (
-        <Shelf
-          key={shelf.row}
-          shelf={shelf}
-          y={shelfYs[idx]}
-          pulled={pulled === shelf.row}
-          occupiedSet={occupiedSet}
-          highlight={highlight}
-          onSlotClick={onSlotClick}
-        />
-      ))}
-
-      {/* Feet */}
-      {[-FRIDGE_W / 2 + 0.2, FRIDGE_W / 2 - 0.2].map((fx, i) => (
-        <mesh key={i} position={[fx, -(totalH / 2 + 0.05), 0]}>
-          <boxGeometry args={[0.18, 0.06, FRIDGE_D * 0.3]} />
-          <meshStandardMaterial color="#0e0e10" />
+      {/* Glass door */}
+      <mesh position={[0, 0, FRIDGE_D / 2 + 0.006]}>
+        <boxGeometry args={[FRIDGE_W - 0.02, totalH - 0.02, 0.012]} />
+        <meshPhysicalMaterial color="#cfd9e6" transparent opacity={0.14} roughness={0.08} metalness={0.1} clearcoat={1} depthWrite={false} />
+      </mesh>
+      {/* Door frame */}
+      {[
+        { pos: [0, totalH / 2 - 0.03, FRIDGE_D / 2 + 0.01], size: [FRIDGE_W, 0.06, 0.03] },
+        { pos: [0, -totalH / 2 + 0.03, FRIDGE_D / 2 + 0.01], size: [FRIDGE_W, 0.06, 0.03] },
+        { pos: [-FRIDGE_W / 2 + 0.03, 0, FRIDGE_D / 2 + 0.01], size: [0.06, totalH, 0.03] },
+        { pos: [FRIDGE_W / 2 - 0.03, 0, FRIDGE_D / 2 + 0.01], size: [0.06, totalH, 0.03] },
+      ].map((w, i) => (
+        <mesh key={i} position={w.pos as [number, number, number]}>
+          <boxGeometry args={w.size as [number, number, number]} />
+          <meshStandardMaterial color="#26262c" roughness={0.8} metalness={0.1} />
         </mesh>
       ))}
+
+      {sorted.map((shelf, i) => (
+        <Shelf key={shelf.row} shelf={shelf} y={shelfYs[i]} pulled={pulled === shelf.row} occupiedSet={occupiedSet} highlight={highlight} glow={glow} onSlotClick={onSlotClick} />
+      ))}
+
+      {/* Floor shadow catcher */}
+      <mesh position={[0, -totalH / 2 - 0.001, 0.2]} rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
+        <planeGeometry args={[8, 8]} />
+        <shadowMaterial opacity={0.35} />
+      </mesh>
     </>
   );
 }
@@ -282,14 +337,14 @@ export default function FridgeViewer3D({
   onSlotClick,
   hideChrome,
 }: Props) {
-  const totalH = shelves.length * (SHELF_H + DIVIDER_H) + 0.22;
-  const camZ = totalH * 1.35 + 1.3;
+  const totalH = shelves.length * SHELF_PITCH + 0.34;
+  const dist = totalH * 1.32 + 1.8;
   const pulled = pulledShelf ?? highlight?.row ?? null;
 
   return (
-    <div className="rounded-xl overflow-hidden border border-slate-700 bg-slate-950">
+    <div className="rounded-xl overflow-hidden border border-slate-700 bg-black">
       {!hideChrome && (
-        <div className="px-3 py-2 border-b border-slate-800 flex items-center justify-between gap-3">
+        <div className="px-3 py-2 border-b border-slate-800 bg-slate-950 flex items-center justify-between gap-3">
           <span className="text-xs font-medium text-slate-300 truncate">{fridgeName}</span>
           {wineName ? (
             <span className="text-xs text-amber-400 truncate">
@@ -303,34 +358,31 @@ export default function FridgeViewer3D({
       )}
 
       <div style={{ height }}>
-        <Canvas dpr={[1, 2]} camera={{ position: [1.5, totalH * 0.32, camZ], fov: 40 }}>
+        <Canvas shadows dpr={[1, 2]} camera={{ position: [dist * 0.5, totalH * 0.5, dist * 0.92], fov: 34 }} gl={{ antialias: true }}>
+          <color attach="background" args={['#000000']} />
           <OrbitControls
             enablePan={false}
-            target={[0, 0, 0.15]}
-            minPolarAngle={Math.PI / 4}
-            maxPolarAngle={(Math.PI * 3) / 4}
-            minAzimuthAngle={-Math.PI / 2.6}
-            maxAzimuthAngle={Math.PI / 2.6}
-            minDistance={camZ * 0.5}
-            maxDistance={camZ * 1.7}
+            target={[0, -0.05, 0.3]}
+            minPolarAngle={Math.PI / 5}
+            maxPolarAngle={Math.PI / 1.9}
+            minAzimuthAngle={-Math.PI / 2.4}
+            maxAzimuthAngle={Math.PI / 2.4}
+            minDistance={dist * 0.45}
+            maxDistance={dist * 1.6}
           />
           <FridgeScene shelves={shelves} occupiedSlots={occupiedSlots} highlight={highlight} pulledShelf={pulled} onSlotClick={onSlotClick} />
         </Canvas>
       </div>
 
       {!hideChrome && (
-        <div className="px-3 py-2 border-t border-slate-800 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500">
+        <div className="px-3 py-2 border-t border-slate-800 bg-slate-950 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500">
           <span className="flex items-center gap-1.5">
             <span className="w-2.5 h-2.5 rounded-full bg-amber-400 shrink-0" />
             Your bottle
           </span>
           <span className="flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-full border border-red-900 bg-red-950 shrink-0" />
-            Occupied
-          </span>
-          <span className="flex items-center gap-1.5">
-            <span className="w-2.5 h-2.5 rounded-full border border-slate-700 bg-slate-900 shrink-0" />
-            Empty
+            <span className="w-2.5 h-2.5 rounded-full bg-emerald-950 border border-emerald-800 shrink-0" />
+            Other bottles
           </span>
           <span className="ml-auto italic text-slate-600">Drag to rotate · pinch to zoom</span>
         </div>
