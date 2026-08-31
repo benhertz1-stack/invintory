@@ -66,8 +66,13 @@ since the previous report (added, opened, ratings, price moves), 5 buying ideas 
 value against your ratings/preferences, and market notes on producers you own. Every report is stored in
 `reports` and viewable at `/reports` in the web app.
 
-- **Schedule:** Cloud Scheduler job `invintory-monthly-report` → `POST /api/reports/run` on the 1st at
-  09:00 America/New_York, authenticated with the `X-Report-Key` header (Secret Manager `REPORT_KEY`).
+- **Schedule:** a claude.ai routine (`invintory-monthly-report`, manage at claude.ai/code/routines) fires
+  on the 1st ≈9:00 ET. It runs on the owner's Claude subscription: it fetches
+  `GET /api/reports/context`, researches prices and picks with its own web tools, and POSTs them to
+  `/api/reports/run` — so the scheduled run costs no API money. Both endpoints accept the
+  `X-Report-Key` header (Secret Manager `REPORT_KEY`). A Cloud Scheduler job with the same name exists
+  as a **paused** fallback that uses the API-key path (`gcloud scheduler jobs resume` to switch back;
+  never run both).
 - **Email:** Gmail SMTP via nodemailer — secrets `SMTP_USER` (your Gmail address) and `SMTP_PASS`
   (a Google App Password), env `REPORT_TO`. Until `SMTP_PASS` is set the report is generated and saved
   but not emailed.
