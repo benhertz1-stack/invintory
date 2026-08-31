@@ -57,6 +57,29 @@ the passphrase (session cookie) or a bearer token issued by the OAuth flow.
 Settings → Connectors → Add custom connector → URL `https://<service>/mcp`. Claude registers itself,
 opens the sign-in page once, and you enter the passphrase. Tokens refresh automatically for 180 days.
 
+## Monthly report
+
+`server/report.ts` builds the monthly cellar email: drink-window alerts (past peak / last call / just
+opened), current per-bottle prices (Claude Opus 5 looks them up with web search and updates the cellar's
+market values; a monthly snapshot in `price_snapshots` powers the "vs last month" column), activity
+since the previous report (added, opened, ratings, price moves), 5 buying ideas that balance price and
+value against your ratings/preferences, and market notes on producers you own. Every report is stored in
+`reports` and viewable at `/reports` in the web app.
+
+- **Schedule:** Cloud Scheduler job `invintory-monthly-report` → `POST /api/reports/run` on the 1st at
+  09:00 America/New_York, authenticated with the `X-Report-Key` header (Secret Manager `REPORT_KEY`).
+- **Email:** Gmail SMTP via nodemailer — secrets `SMTP_USER` (your Gmail address) and `SMTP_PASS`
+  (a Google App Password), env `REPORT_TO`. Until `SMTP_PASS` is set the report is generated and saved
+  but not emailed.
+- **On demand:** the Reports page ("Run now"), or ask Claude: *"send me my monthly cellar report"*
+  (`send_monthly_report` tool). `drink_soon` gives the alerts alone.
+- **Cost:** roughly $1–3 per run (Opus 5 + ~60 web searches).
+
+To set the Gmail app password: Google Account → Security → 2-Step Verification → App passwords →
+create one for "Invintory", then
+`printf 'the 16 chars' | gcloud secrets versions add SMTP_PASS --data-file=- --project invintory-495823`
+and redeploy (`.\deploy.ps1`).
+
 ## Changing the passphrase
 
 `npm run passphrase -- "new words"` → update `.env` → `.\deploy.ps1 -SetSecrets`. Rotating `AUTH_SECRET`

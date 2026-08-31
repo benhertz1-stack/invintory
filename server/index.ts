@@ -1,5 +1,6 @@
 import 'dotenv/config';
-import express, { type Request, type Response } from 'express';
+import crypto from 'crypto';
+import express, { type NextFunction, type Request, type Response } from 'express';
 import path from 'path';
 import Anthropic from '@anthropic-ai/sdk';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -23,6 +24,7 @@ import { TOOLS, type ToolContext, type ToolResult, runTool } from './tools';
 import { SERVER_INSTRUCTIONS, createWineMcpServer } from './wine-mcp-server';
 import { runMigrations } from './migrate';
 import { seedFridges, seedIfEmpty } from './seed';
+import { getReport, listReports, runMonthlyReport } from './report';
 
 // Re-exported for older imports
 export type { BottleDoc, WineDoc, FridgeDoc, FridgeShelfDoc } from './db';
@@ -275,6 +277,73 @@ app.get('/api/locate/:wineId/:bottleId', guard, async (req, res) => {
 
 app.get('/api/tastings', guard, async (_req, res) => res.json(await getTastings(db)));
 app.get('/api/preferences', guard, async (_req, res) => res.json(await getPreferences(db)));
+
+// ── Monthly report (Cloud Scheduler with X-Report-Key, or the signed-in owner) ─
+
+function reportKeyOk(req: Request): boolean {
+  const expected = process.env.REPORT_KEY?.trim();
+  const given = req.get('x-report-key')?.trim();
+  if (!expected || !given) return false;
+  const a = Buffer.from(given);
+  const b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+const reportGuard = (req: Request, res: Response, next: NextFunction): void => {
+  if (reportKeyOk(req)) {
+    next();
+    return;
+  }
+  guard(req, res, next);
+};
+
+app.post('/api/reports/run', reportGuard, async (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  req.setTimeout(0);
+  try {
+    const doc = await runMonthlyReport(db, {
+      send: b.send !== false,
+      refreshPrices: b.refreshPrices !== false,
+      recommend: b.recommend !== false,
+      baseUrl: baseUrlOf(req),
+      limitPriceLookups: typeof b.limitPriceLookups === 'number' ? b.limitPriceLookups : undefined,
+    });
+    res.json({
+      ok: true,
+      id: doc.id,
+      subject: doc.subject,
+      sent: doc.sent,
+      error: doc.error,
+      totals: doc.summary.totals,
+      alerts: { pastPeak: doc.summary.alerts.pastPeak.length, lastCall: doc.summary.alerts.lastCall.length, opening: doc.summary.alerts.opening.length },
+      picks: doc.summary.picks.length,
+      warnings: doc.summary.warnings,
+    });
+  } catch (err) {
+    console.error('report failed', err);
+    res.status(500).json({ error: `Report failed: ${err instanceof Error ? err.message : String(err)}` });
+  }
+});
+
+app.get('/api/reports', guard, async (_req, res) => res.json(await listReports(db)));
+
+app.get('/api/reports/:id', guard, async (req, res) => {
+  const doc = await getReport(db, req.params.id);
+  if (!doc) {
+    res.status(404).json({ error: 'Report not found' });
+    return;
+  }
+  res.json(doc);
+});
+
+app.get('/api/reports/:id/html', guard, async (req, res) => {
+  const doc = await getReport(db, req.params.id);
+  if (!doc) {
+    res.status(404).send('Report not found');
+    return;
+  }
+  res.type('html').send(doc.html);
+});
 
 // ── In-app agent (same tools, Anthropic tool-use loop) ───────────────────────
 

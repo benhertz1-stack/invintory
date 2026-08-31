@@ -61,6 +61,10 @@ export interface WineDoc {
   description: string | null;
   collectionNotes: string;
   bottles: BottleDoc[];
+  /** Set by the monthly report when market prices were refreshed from the web. */
+  priceCheckedAt?: string;
+  priceSource?: string;
+  priceConfidence?: string;
 }
 
 export interface FridgeShelfDoc {

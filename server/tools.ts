@@ -23,6 +23,7 @@ import {
   summarize,
 } from './db';
 import { renderFridgePng } from './render';
+import { computeAlerts, reportRecipient, runMonthlyReport, smtpConfigured } from './report';
 
 /**
  * Single registry of cellar tools. Exposed verbatim over MCP (Claude app / Claude Desktop)
@@ -1134,11 +1135,56 @@ const removeBottle: ToolDef = {
   },
 };
 
+const drinkSoon: ToolDef = {
+  name: 'drink_soon',
+  description:
+    'Wines at or past their drinking window: past peak, last call (window closes this year or next), and wines that just entered their window. Use for "what should I drink before it fades" questions.',
+  readOnly: true,
+  inputSchema: { type: 'object', properties: {} },
+  async handler(_input, ctx) {
+    const wines = await getAllWines(ctx.db);
+    const a = computeAlerts(wines);
+    const fmt = (rows: typeof a.pastPeak): string =>
+      rows.length ? rows.map((r) => `- **${r.label}** — ${r.window} (${r.note}) · ${r.bottles} bottle${r.bottles === 1 ? '' : 's'} · ${r.location} · id: \`${r.wineId}\``).join('\n') : '- none';
+    return {
+      text:
+        `**Past peak**\n${fmt(a.pastPeak)}\n\n**Last call**\n${fmt(a.lastCall)}\n\n**Just entered their window**\n${fmt(a.opening)}` +
+        (a.unknownWindow ? `\n\n${a.unknownWindow} wine${a.unknownWindow === 1 ? ' has' : 's have'} no drinking window recorded.` : ''),
+      data: a,
+    };
+  },
+};
+
+const sendMonthlyReport: ToolDef = {
+  name: 'send_monthly_report',
+  description:
+    "Generate the monthly cellar report now — drink-window alerts, current prices looked up on the web, last month's activity, and buying ideas — and email it. It runs in the background for 5–10 minutes and also appears under Reports in the web app. Only call when the user asks for the report.",
+  inputSchema: {
+    type: 'object',
+    properties: {
+      email: { type: 'boolean', description: 'Email it when done (default true)' },
+      refresh_prices: { type: 'boolean', description: 'Look up current prices on the web (default true; slower)' },
+    },
+  },
+  async handler(input, ctx) {
+    const send = bool(input, 'email') ?? true;
+    const refresh = bool(input, 'refresh_prices') ?? true;
+    const to = reportRecipient();
+    const emailNote = send ? (smtpConfigured() && to ? ` It will be emailed to ${to}.` : ' Email is not set up yet, so it will only be saved in the web app.') : '';
+    void runMonthlyReport(ctx.db, { send, refreshPrices: refresh, recommend: true, baseUrl: ctx.baseUrl }).catch((e) => console.error('report failed', e));
+    return {
+      text: `Started the monthly report (prices ${refresh ? 'refreshed from the web' : 'taken from the cellar records'}). It takes about 5–10 minutes.${emailNote} Past reports: ${ctx.baseUrl}/reports`,
+      data: { started: true, send, refreshPrices: refresh },
+    };
+  },
+};
+
 export const TOOLS: ToolDef[] = [
   listWines,
   searchWines,
   getWineDetail,
   getCollectionStats,
+  drinkSoon,
   locateBottle,
   showFridge,
   addWine,
@@ -1153,6 +1199,7 @@ export const TOOLS: ToolDef[] = [
   updateBottlePrice,
   addWineNotes,
   removeBottle,
+  sendMonthlyReport,
 ];
 
 export function getTool(name: string): ToolDef | undefined {

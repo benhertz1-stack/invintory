@@ -1,11 +1,12 @@
 import { Outlet, NavLink } from 'react-router-dom';
-import { Wine, LayoutDashboard, List, Sparkles, Refrigerator, LogOut } from 'lucide-react';
+import { Wine, LayoutDashboard, List, Sparkles, Refrigerator, LogOut, Mail } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
 const navItems = [
   { to: '/collection', icon: List, label: 'Collection' },
   { to: '/fridges', icon: Refrigerator, label: 'Fridges' },
   { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
+  { to: '/reports', icon: Mail, label: 'Reports' },
   { to: '/advisor', icon: Sparkles, label: 'Wine Advisor' },
 ];
 

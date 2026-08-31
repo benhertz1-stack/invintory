@@ -140,6 +140,42 @@ export function getLocate(wineId: string, bottleId: string): Promise<LocateData>
   return request<LocateData>(`/locate/${encodeURIComponent(wineId)}/${encodeURIComponent(bottleId)}`);
 }
 
+// ── Monthly reports ───────────────────────────────────────────────────────────
+
+export interface ReportListItem {
+  id: string;
+  month: string;
+  createdAt: string;
+  subject: string;
+  to: string | null;
+  sent: boolean;
+  error: string | null;
+}
+
+export interface ReportRunResult {
+  ok: true;
+  id: string;
+  subject: string;
+  sent: boolean;
+  error: string | null;
+  totals: { wines: number; bottles: number; value: number };
+  alerts: { pastPeak: number; lastCall: number; opening: number };
+  picks: number;
+  warnings: string[];
+}
+
+export function getReports(): Promise<ReportListItem[]> {
+  return request<ReportListItem[]>('/reports');
+}
+
+export function getReport(id: string): Promise<ReportListItem & { html: string }> {
+  return request<ReportListItem & { html: string }>(`/reports/${encodeURIComponent(id)}`);
+}
+
+export function runReport(opts: { send: boolean; refreshPrices: boolean }): Promise<ReportRunResult> {
+  return request<ReportRunResult>('/reports/run', { method: 'POST', body: JSON.stringify(opts) });
+}
+
 // ── Agent chat ────────────────────────────────────────────────────────────────
 
 export interface AgentResponse {

@@ -50,7 +50,10 @@ gcloud run deploy $ServiceName `
   --cpu 1 `
   --min-instances 0 `
   --max-instances 3 `
-  --update-secrets "ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest,OWNER_PASSPHRASE_HASH=OWNER_PASSPHRASE_HASH:latest,AUTH_SECRET=AUTH_SECRET:latest"
+  --timeout 1800 `
+  --no-cpu-throttling `
+  --set-env-vars "REPORT_TO=benhertz1@gmail.com" `
+  --update-secrets "ANTHROPIC_API_KEY=ANTHROPIC_API_KEY:latest,OWNER_PASSPHRASE_HASH=OWNER_PASSPHRASE_HASH:latest,AUTH_SECRET=AUTH_SECRET:latest,REPORT_KEY=REPORT_KEY:latest,SMTP_USER=SMTP_USER:latest,SMTP_PASS=SMTP_PASS:latest"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $url = (gcloud run services describe $ServiceName --region $Region --project $ProjectId --format="value(status.url)" 2>$null).Trim()

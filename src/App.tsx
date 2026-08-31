@@ -7,6 +7,7 @@ import WineDetail from './pages/WineDetail';
 import Advisor from './pages/Advisor';
 import Fridges from './pages/Fridges';
 import Locate from './pages/Locate';
+import Reports from './pages/Reports';
 import Login from './pages/Login';
 import { useAuth } from './context/AuthContext';
 
@@ -31,6 +32,7 @@ export default function App() {
         <Route path="collection/:id" element={<WineDetail />} />
         <Route path="fridges" element={<Fridges />} />
         <Route path="dashboard" element={<Dashboard />} />
+        <Route path="reports" element={<Reports />} />
         <Route path="advisor" element={<Advisor />} />
         <Route path="*" element={<Navigate to="/collection" replace />} />
       </Route>
