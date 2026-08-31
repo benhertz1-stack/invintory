@@ -534,6 +534,34 @@ ${s.warnings.length ? `<p style="${muted}margin-top:18px;">Notes: ${esc(s.warnin
   return { html, text };
 }
 
+/** Everything an external research agent needs before building the report. */
+export async function buildReportContext(db: Firestore): Promise<Record<string, unknown>> {
+  const [wines, tastings, prefs] = await Promise.all([getAllWines(db), getTastings(db), getPreferences(db)]);
+  const active = wines.filter((w) => activeBottles(w).length > 0);
+  return {
+    month: monthKey(),
+    wines: active.map((w) => {
+      const av = activeBottles(w);
+      const priced = av.filter((bt) => bt.marketPrice);
+      return {
+        id: w.id,
+        vintage: w.vintage,
+        producer: w.producer,
+        name: w.name,
+        region: w.region,
+        country: w.country,
+        type: w.wineType,
+        grapes: w.grapes,
+        bottles: av.length,
+        lastPrice: priced.length ? Math.round((priced.reduce((s, bt) => s + (bt.marketPrice ?? 0), 0) / priced.length) * 100) / 100 : null,
+        drinkWindow: w.drinkWindowStart && w.drinkWindowEnd ? `${w.drinkWindowStart}-${w.drinkWindowEnd}` : null,
+      };
+    }),
+    tastings: tastings.map((t) => ({ wine: `${t.vintage} ${t.wineName}`, rating: t.rating, notes: t.notes, wouldBuyAgain: t.wouldBuyAgain })),
+    preferences: prefs.notes,
+  };
+}
+
 // ── Orchestration ─────────────────────────────────────────────────────────────
 
 export async function listReports(db: Firestore): Promise<Array<Omit<ReportDoc, 'html' | 'summary'>>> {

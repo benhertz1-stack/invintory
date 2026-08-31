@@ -23,7 +23,7 @@ import {
   summarize,
 } from './db';
 import { renderFridgePng } from './render';
-import { computeAlerts, reportRecipient, runMonthlyReport, smtpConfigured } from './report';
+import { buildReportContext, computeAlerts, reportRecipient, runMonthlyReport, smtpConfigured } from './report';
 
 /**
  * Single registry of cellar tools. Exposed verbatim over MCP (Claude app / Claude Desktop)
@@ -1179,6 +1179,51 @@ const sendMonthlyReport: ToolDef = {
   },
 };
 
+const getReportContext: ToolDef = {
+  name: 'get_report_context',
+  description:
+    'Data bundle for building the monthly report: every active wine with its last known price and drink window, all tastings, and stated preferences. Used by the scheduled reporting agent before it researches current prices and buying picks.',
+  readOnly: true,
+  inputSchema: { type: 'object', properties: {} },
+  async handler(_input, ctx) {
+    const context = await buildReportContext(ctx.db);
+    return { text: JSON.stringify(context), data: context };
+  },
+};
+
+const submitMonthlyReport: ToolDef = {
+  name: 'submit_monthly_report',
+  description:
+    'Assemble, store, and email the monthly report from PRE-RESEARCHED data — no server-side AI calls. Intended for the scheduled reporting agent after it has researched current prices and picks with its own web tools; never call it with invented data. ' +
+    'prices entries: {id (from get_report_context), price_usd (number|null), confidence: "high"|"medium"|"low", source, note}. ' +
+    'picks entries: {name, producer, vintage, region, grapes, approx_price_usd, why, value_note, where_to_buy}.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      prices: { type: 'array', description: 'One entry per wine id from get_report_context', items: { type: 'object' } },
+      picks: { type: 'array', description: 'The 5 recommended purchases', items: { type: 'object' } },
+      market_notes: { type: 'array', items: { type: 'string' }, description: '2–4 sourced notes about producers/regions the owner holds' },
+      email: { type: 'boolean', description: 'Send the email when done (default true)' },
+    },
+    required: ['prices', 'picks'],
+  },
+  async handler(input, ctx) {
+    const doc = await runMonthlyReport(ctx.db, {
+      send: bool(input, 'email') ?? true,
+      refreshPrices: false,
+      recommend: false,
+      baseUrl: ctx.baseUrl,
+      prices: Array.isArray(input.prices) ? (input.prices as never) : undefined,
+      picks: Array.isArray(input.picks) ? (input.picks as never) : undefined,
+      marketNotes: Array.isArray(input.market_notes) ? (input.market_notes as string[]) : undefined,
+    });
+    return {
+      text: `Report ${doc.id} created: "${doc.subject}". ${doc.sent ? `Emailed to ${doc.to}.` : (doc.error ?? 'Not emailed.')} View it at ${ctx.baseUrl}/reports`,
+      data: { id: doc.id, subject: doc.subject, sent: doc.sent, error: doc.error, warnings: doc.summary.warnings },
+    };
+  },
+};
+
 export const TOOLS: ToolDef[] = [
   listWines,
   searchWines,
@@ -1200,6 +1245,8 @@ export const TOOLS: ToolDef[] = [
   addWineNotes,
   removeBottle,
   sendMonthlyReport,
+  getReportContext,
+  submitMonthlyReport,
 ];
 
 export function getTool(name: string): ToolDef | undefined {

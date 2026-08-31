@@ -24,7 +24,7 @@ import { TOOLS, type ToolContext, type ToolResult, runTool } from './tools';
 import { SERVER_INSTRUCTIONS, createWineMcpServer } from './wine-mcp-server';
 import { runMigrations } from './migrate';
 import { seedFridges, seedIfEmpty } from './seed';
-import { getReport, listReports, runMonthlyReport } from './report';
+import { buildReportContext, getReport, listReports, runMonthlyReport } from './report';
 
 // Re-exported for older imports
 export type { BottleDoc, WineDoc, FridgeDoc, FridgeShelfDoc } from './db';
@@ -300,30 +300,7 @@ const reportGuard = (req: Request, res: Response, next: NextFunction): void => {
 /** Everything an external research agent needs to build the report data. */
 app.get('/api/reports/context', reportGuard, async (_req, res) => {
   try {
-    const [wines, tastings, prefs] = await Promise.all([getAllWines(db), getTastings(db), getPreferences(db)]);
-    const active = wines.filter((w) => activeBottles(w).length > 0);
-    res.json({
-      month: new Date().toISOString().slice(0, 7),
-      wines: active.map((w) => {
-        const av = activeBottles(w);
-        const priced = av.filter((bt) => bt.marketPrice);
-        return {
-          id: w.id,
-          vintage: w.vintage,
-          producer: w.producer,
-          name: w.name,
-          region: w.region,
-          country: w.country,
-          type: w.wineType,
-          grapes: w.grapes,
-          bottles: av.length,
-          lastPrice: priced.length ? Math.round((priced.reduce((s, bt) => s + (bt.marketPrice ?? 0), 0) / priced.length) * 100) / 100 : null,
-          drinkWindow: w.drinkWindowStart && w.drinkWindowEnd ? `${w.drinkWindowStart}-${w.drinkWindowEnd}` : null,
-        };
-      }),
-      tastings: tastings.map((t) => ({ wine: `${t.vintage} ${t.wineName}`, rating: t.rating, notes: t.notes, wouldBuyAgain: t.wouldBuyAgain })),
-      preferences: prefs.notes,
-    });
+    res.json(await buildReportContext(db));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to build report context' });
