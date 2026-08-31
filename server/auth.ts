@@ -155,28 +155,78 @@ function bearerOf(req: Request): string | null {
   return m ? m[1].trim() : null;
 }
 
-// ── Brute-force throttle (per instance; the passphrase is the real defence) ───
+// ── Brute-force protection ────────────────────────────────────────────────────
+// Two layers. A per-IP counter in memory (cheap, per instance), and a GLOBAL
+// escalating lockout persisted in Firestore so a short passcode cannot be
+// guessed by spreading attempts across IPs or Cloud Run instances:
+// after GLOBAL_FREE_ATTEMPTS wrong tries every login is refused for 15 min,
+// doubling on each further failure up to 24 h. A correct login resets it.
+// (Existing sessions and connector tokens keep working during a lockout.)
+
+const LOCK_DOC = 'auth_lockout';
+const GLOBAL_FREE_ATTEMPTS = 5;
+const BASE_LOCK_MS = 15 * 60 * 1000;
+const MAX_LOCK_MS = 24 * 60 * 60 * 1000;
+const FAILURE_MEMORY_MS = 24 * 60 * 60 * 1000;
+
+interface LockDoc {
+  failures: number;
+  lockedUntil: number;
+  lastFailureAt: number;
+}
 
 const failures = new Map<string, { n: number; reset: number }>();
 
-function throttled(ip: string): boolean {
+function ipBlockedUntil(ip: string): number {
   const f = failures.get(ip);
-  if (!f) return false;
+  if (!f) return 0;
   if (Date.now() > f.reset) {
     failures.delete(ip);
-    return false;
+    return 0;
   }
-  return f.n >= MAX_FAILURES;
+  return f.n >= MAX_FAILURES ? f.reset : 0;
 }
 
-function recordFailure(ip: string): void {
+async function readLock(db: Firestore): Promise<LockDoc> {
+  const snap = await db.collection('meta').doc(LOCK_DOC).get();
+  const d = snap.exists ? (snap.data() as LockDoc) : { failures: 0, lockedUntil: 0, lastFailureAt: 0 };
+  if (d.lastFailureAt && Date.now() - d.lastFailureAt > FAILURE_MEMORY_MS) return { failures: 0, lockedUntil: 0, lastFailureAt: 0 };
+  return d;
+}
+
+async function lockStatus(db: Firestore, ip: string): Promise<{ blocked: boolean; retryAfterSec: number }> {
+  const now = Date.now();
+  const local = ipBlockedUntil(ip);
+  if (local > now) return { blocked: true, retryAfterSec: Math.ceil((local - now) / 1000) };
+  const g = await readLock(db);
+  if (g.lockedUntil > now) return { blocked: true, retryAfterSec: Math.ceil((g.lockedUntil - now) / 1000) };
+  return { blocked: false, retryAfterSec: 0 };
+}
+
+async function noteFailure(db: Firestore, ip: string): Promise<void> {
   const f = failures.get(ip);
   if (!f || Date.now() > f.reset) failures.set(ip, { n: 1, reset: Date.now() + FAILURE_WINDOW_MS });
   else f.n += 1;
+  const g = await readLock(db);
+  const count = g.failures + 1;
+  let lockedUntil = g.lockedUntil;
+  if (count >= GLOBAL_FREE_ATTEMPTS) {
+    lockedUntil = Date.now() + Math.min(BASE_LOCK_MS * 2 ** (count - GLOBAL_FREE_ATTEMPTS), MAX_LOCK_MS);
+  }
+  await db.collection('meta').doc(LOCK_DOC).set({ failures: count, lockedUntil, lastFailureAt: Date.now() } as LockDoc);
+  console.warn(`auth: wrong passcode from ${ip} (global failure #${count}${lockedUntil > Date.now() ? ', locked' : ''})`);
 }
 
-function clearFailures(ip: string): void {
+async function noteSuccess(db: Firestore, ip: string): Promise<void> {
   failures.delete(ip);
+  const g = await readLock(db);
+  if (g.failures || g.lockedUntil) await db.collection('meta').doc(LOCK_DOC).set({ failures: 0, lockedUntil: 0, lastFailureAt: 0 } as LockDoc);
+}
+
+function humanWait(sec: number): string {
+  if (sec < 90) return `${sec} seconds`;
+  if (sec < 3600) return `${Math.ceil(sec / 60)} minutes`;
+  return `${Math.ceil(sec / 3600)} hours`;
 }
 
 // ── Redirect URI policy ───────────────────────────────────────────────────────
@@ -221,10 +271,10 @@ function loginPage(opts: { action: string; hidden: Record<string, string>; error
 </style></head><body>
 <form class="card" method="post" action="${esc(opts.action)}" autocomplete="off">
   <h1>🍷 Invintory</h1>
-  <p>${opts.clientName ? `<b>${esc(opts.clientName)}</b> wants access to your wine cellar.` : 'Enter your passphrase to continue.'}</p>
+  <p>${opts.clientName ? `<b>${esc(opts.clientName)}</b> wants access to your wine cellar.` : 'Enter your passcode to continue.'}</p>
   ${opts.error ? `<div class="err">${esc(opts.error)}</div>` : ''}
   ${hidden}
-  <label for="pp">Passphrase</label>
+  <label for="pp">Passcode</label>
   <input id="pp" type="password" name="passphrase" required autofocus autocomplete="current-password">
   <button type="submit">Sign in</button>
   <div class="who">Single-owner access. Sessions expire automatically.</div>
@@ -461,16 +511,18 @@ export function installAuthRoutes(app: Express, db: Firestore, cfg: AuthConfig):
         .type('html')
         .send(loginPage({ action: `${baseUrlOf(req)}/oauth/authorize`, hidden: { ...p }, error, clientName: client.client_name }));
     };
-    if (throttled(ip)) {
-      render('Too many attempts. Try again in 15 minutes.', 429);
+    const lock = await lockStatus(db, ip);
+    if (lock.blocked) {
+      res.set('Retry-After', String(lock.retryAfterSec));
+      render(`Too many attempts. Try again in ${humanWait(lock.retryAfterSec)}.`, 429);
       return;
     }
     if (!verifyPassphrase(passphrase, cfg.passphraseHash)) {
-      recordFailure(ip);
-      render('Incorrect passphrase.');
+      await noteFailure(db, ip);
+      render('Incorrect passcode.');
       return;
     }
-    clearFailures(ip);
+    await noteSuccess(db, ip);
     const code = crypto.randomBytes(32).toString('base64url');
     const doc: OAuthCodeDoc = {
       client_id: client.client_id,
@@ -576,19 +628,21 @@ export function installAuthRoutes(app: Express, db: Firestore, cfg: AuthConfig):
   });
 
   // Web-app session endpoints
-  app.post('/api/login', json, (req, res) => {
+  app.post('/api/login', json, async (req, res) => {
     const ip = clientIp(req);
-    if (throttled(ip)) {
-      res.status(429).json({ error: 'Too many attempts. Try again in 15 minutes.' });
+    const lock = await lockStatus(db, ip);
+    if (lock.blocked) {
+      res.set('Retry-After', String(lock.retryAfterSec));
+      res.status(429).json({ error: `Too many attempts. Try again in ${humanWait(lock.retryAfterSec)}.` });
       return;
     }
     const passphrase = typeof req.body?.passphrase === 'string' ? req.body.passphrase : '';
     if (!verifyPassphrase(passphrase, cfg.passphraseHash)) {
-      recordFailure(ip);
-      res.status(401).json({ error: 'Incorrect passphrase' });
+      await noteFailure(db, ip);
+      res.status(401).json({ error: 'Incorrect passcode' });
       return;
     }
-    clearFailures(ip);
+    await noteSuccess(db, ip);
     const token = signToken(cfg.secret, { typ: 'session', sub: 'owner' }, SESSION_TTL);
     res.cookie(SESSION_COOKIE, token, {
       httpOnly: true,

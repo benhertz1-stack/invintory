@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.server.json",
     "passphrase": "tsx server/passphrase.ts",
     "migrate": "tsx server/migrate.ts",
-    "mcp:stdio": "tsx server/mcp.ts"
+    "mcp:stdio": "tsx server/mcp.ts",
+    "unlock": "tsx scripts/unlock-login.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.95.1",

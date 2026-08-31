@@ -16,7 +16,7 @@ export default function Login() {
     try {
       await login(passphrase.trim());
     } catch (err) {
-      setError(err instanceof Error && err.message !== 'Not signed in' ? err.message : 'Incorrect passphrase');
+      setError(err instanceof Error && err.message !== 'Not signed in' ? err.message : 'Incorrect passcode');
     } finally {
       setBusy(false);
     }
@@ -38,7 +38,7 @@ export default function Login() {
         <form onSubmit={handleSubmit} className="bg-slate-900 rounded-2xl p-7 border border-slate-800 space-y-4">
           <div>
             <label htmlFor="passphrase" className="block text-xs text-slate-400 mb-1.5">
-              Passphrase
+              Passcode
             </label>
             <input
               id="passphrase"

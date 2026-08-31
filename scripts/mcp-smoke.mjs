@@ -82,7 +82,7 @@ async function main() {
     scope: 'cellar',
   };
   const page = await fetch(`${asm.authorization_endpoint}?${new URLSearchParams(params)}`);
-  if (!page.ok || !(await page.text()).includes('Passphrase')) throw new Error('authorize page failed');
+  if (!page.ok || !(await page.text()).includes('Passcode')) throw new Error('authorize page failed');
   log('OK authorize page renders');
 
   const wrong = await fetch(asm.authorization_endpoint, {
