@@ -1,0 +1,12 @@
+.git
+.gitignore
+node_modules
+dist
+dist-server
+.env
+.env.*
+.claude
+scripts
+*.png
+*.md
+test-mcp.bat

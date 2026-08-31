@@ -1,71 +1,55 @@
-import { createContext, useContext, useState, useCallback, ReactNode } from 'react';
-import { AuthState, Profile } from '../types';
-import { authenticate as apiAuth, getProfile } from '../lib/api';
+import { createContext, useCallback, useContext, useEffect, useState, ReactNode } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { AUTH_EVENT, login as apiLogin, logout as apiLogout, me } from '../lib/api';
+
+type Status = 'checking' | 'in' | 'out';
 
 interface AuthContextType {
-  auth: AuthState | null;
-  profile: Profile | null;
-  collectionId: string | null;
-  login: (refreshToken: string, googleApiKey: string) => Promise<void>;
-  logout: () => void;
-  isLoading: boolean;
-  error: string | null;
+  status: Status;
+  login: (passphrase: string) => Promise<void>;
+  logout: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | null>(null);
 
-function getStoredAuth(): AuthState | null {
-  const raw = localStorage.getItem('auth');
-  return raw ? JSON.parse(raw) : null;
-}
-
-function getStoredProfile(): Profile | null {
-  const raw = localStorage.getItem('profile');
-  return raw ? JSON.parse(raw) : null;
-}
-
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [auth, setAuth] = useState<AuthState | null>(getStoredAuth);
-  const [profile, setProfile] = useState<Profile | null>(getStoredProfile);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<Status>('checking');
+  const queryClient = useQueryClient();
 
-  const collectionId =
-    profile?.collectionId ?? profile?.collection?.id ?? null;
-
-  const login = useCallback(async (refreshToken: string, googleApiKey: string) => {
-    setIsLoading(true);
-    setError(null);
-    try {
-      const newAuth = await apiAuth(refreshToken, googleApiKey);
-      setAuth(newAuth);
-      const newProfile = await getProfile(newAuth.userId);
-      setProfile(newProfile);
-      localStorage.setItem('profile', JSON.stringify(newProfile));
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : 'Login failed';
-      setError(msg);
-      throw e;
-    } finally {
-      setIsLoading(false);
-    }
+  useEffect(() => {
+    me()
+      .then((ok) => setStatus(ok ? 'in' : 'out'))
+      .catch(() => setStatus('out'));
   }, []);
 
-  const logout = useCallback(() => {
-    localStorage.removeItem('auth');
-    localStorage.removeItem('profile');
-    setAuth(null);
-    setProfile(null);
-  }, []);
+  useEffect(() => {
+    const onUnauthorized = () => {
+      setStatus('out');
+      queryClient.clear();
+    };
+    window.addEventListener(AUTH_EVENT, onUnauthorized);
+    return () => window.removeEventListener(AUTH_EVENT, onUnauthorized);
+  }, [queryClient]);
 
-  return (
-    <AuthContext.Provider value={{ auth, profile, collectionId, login, logout, isLoading, error }}>
-      {children}
-    </AuthContext.Provider>
+  const login = useCallback(
+    async (passphrase: string) => {
+      await apiLogin(passphrase);
+      queryClient.clear();
+      setStatus('in');
+    },
+    [queryClient],
   );
+
+  const logout = useCallback(async () => {
+    await apiLogout().catch(() => {});
+    queryClient.clear();
+    setStatus('out');
+  }, [queryClient]);
+
+  return <AuthContext.Provider value={{ status, login, logout }}>{children}</AuthContext.Provider>;
 }
 
-export function useAuth() {
+export function useAuth(): AuthContextType {
   const ctx = useContext(AuthContext);
   if (!ctx) throw new Error('useAuth must be used inside AuthProvider');
   return ctx;

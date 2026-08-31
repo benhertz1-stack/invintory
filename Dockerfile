@@ -1,5 +1,5 @@
 # Build stage
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 WORKDIR /app
 
 COPY package*.json ./
@@ -9,8 +9,11 @@ COPY . .
 RUN npm run build
 
 # Production stage
-FROM node:20-alpine
+FROM node:22-alpine
 WORKDIR /app
+
+# Fonts so sharp/librsvg can rasterise text in the fridge renders
+RUN apk add --no-cache fontconfig ttf-dejavu
 
 ENV NODE_ENV=production
 ENV PORT=8080

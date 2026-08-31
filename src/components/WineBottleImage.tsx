@@ -82,7 +82,6 @@ export default function WineBottleImage({ name, producer, vintage, wineType, cla
       {/* Wine name */}
       <foreignObject x="53" y="168" width="54" height="54" clipPath="url(#bottleClip)">
         <div
-          xmlns="http://www.w3.org/1999/xhtml"
           style={{
             fontSize: '6.5px',
             fontFamily: 'serif',
@@ -100,7 +99,6 @@ export default function WineBottleImage({ name, producer, vintage, wineType, cla
       {/* Producer */}
       <foreignObject x="52" y="228" width="56" height="30" clipPath="url(#bottleClip)">
         <div
-          xmlns="http://www.w3.org/1999/xhtml"
           style={{
             fontSize: '5.5px',
             fontFamily: 'sans-serif',

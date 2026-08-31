@@ -1,180 +1,90 @@
 import 'dotenv/config';
-import express from 'express';
+import express, { type Request, type Response } from 'express';
 import path from 'path';
-import { readFileSync } from 'fs';
-import { parse } from 'csv-parse/sync';
-import admin from 'firebase-admin';
 import Anthropic from '@anthropic-ai/sdk';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { createWineMcpServer } from './wine-mcp-server';
+import {
+  type WineDoc,
+  activeBottles,
+  describeLocation,
+  findFridge,
+  getAllWines,
+  getDb,
+  getFridges,
+  getPreferences,
+  getTastings,
+  getWineById,
+  occupancyFor,
+  shelfOf,
+  summarize,
+} from './db';
+import { baseUrlOf, installAuthRoutes, loadAuthConfig, requireBearer, requireOwner } from './auth';
+import { TOOLS, type ToolContext, type ToolResult, runTool } from './tools';
+import { SERVER_INSTRUCTIONS, createWineMcpServer } from './wine-mcp-server';
+import { runMigrations } from './migrate';
+import { seedFridges, seedIfEmpty } from './seed';
 
-admin.initializeApp({ projectId: process.env.GOOGLE_CLOUD_PROJECT || 'invintory-495823' });
-const db = admin.firestore();
+// Re-exported for older imports
+export type { BottleDoc, WineDoc, FridgeDoc, FridgeShelfDoc } from './db';
 
+const db = getDb();
+const cfg = loadAuthConfig();
 const app = express();
-const PORT = process.env.PORT || 3001;
-app.use(express.json({ limit: '2mb' }));
+const PORT = Number(process.env.PORT || 3001);
 
-export interface BottleDoc {
-  id: string;
-  cellar: string;
-  size: string;
-  purchasePrice: number | null;
-  marketPrice: number | null;
-  currency: string;
-  purchaseDate: string;
-  location: string;
-  section: string;
-  row: number | null;
-  column: number | null;
-  depth: number | null;
-  addedOn: string;
-  personalNotes: string;
-  bottleCode: string;
-  barcode: string;
-  consumed: boolean;
-}
+app.set('trust proxy', true);
+app.disable('x-powered-by');
+app.use(express.json({ limit: '25mb' }));
 
-export interface WineDoc {
-  id: string;
-  name: string;
-  vintage: number;
-  wineType: string;
-  grapes: string;
-  producer: string;
-  country: string;
-  region: string;
-  abv: string;
-  drinkWindowStart: number | null;
-  drinkWindowEnd: number | null;
-  description: string | null;
-  collectionNotes: string;
-  bottles: BottleDoc[];
-}
+const ctxFor = (req: Request): ToolContext => ({ db, baseUrl: baseUrlOf(req) });
 
-function slugify(str: string): string {
-  return str
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '');
-}
-
-function parseNum(s: string): number | null {
-  const n = parseFloat(s);
-  return isNaN(n) ? null : n;
-}
-
-function parseInt2(s: string): number | null {
-  const n = parseInt(s, 10);
-  return isNaN(n) ? null : n;
-}
-
-async function seedIfEmpty() {
-  const snap = await db.collection('wines').limit(1).get();
-  if (!snap.empty) {
-    console.log('Firestore already seeded, skipping.');
+function sendTool(res: Response, r: ToolResult): void {
+  if (r.isError) {
+    res.status(400).json({ error: r.text, data: r.data });
     return;
   }
-
-  const csvPath = path.join(process.cwd(), 'server', 'data', 'collection.csv');
-  const raw = readFileSync(csvPath, 'utf-8');
-  const rows = parse(raw, { columns: true, skip_empty_lines: true, bom: true }) as Record<string, string>[];
-
-  const wineMap = new Map<string, WineDoc>();
-  const usedIds = new Set<string>();
-
-  for (const row of rows) {
-    const name = row['Wine Name']?.trim() ?? '';
-    const vintage = parseInt2(row['Vintage']) ?? 0;
-    const key = `${name}__${vintage}`;
-
-    if (!wineMap.has(key)) {
-      const base = slugify(`${row['Producer'] || name}-${vintage}`);
-      let id = base;
-      let suffix = 2;
-      while (usedIds.has(id)) id = `${base}-${suffix++}`;
-      usedIds.add(id);
-
-      wineMap.set(key, {
-        id,
-        name,
-        vintage,
-        wineType: row['Wine Type']?.trim() ?? '',
-        grapes: row['Grapes']?.trim() ?? '',
-        producer: row['Producer']?.trim() ?? '',
-        country: row['Country']?.trim() ?? '',
-        region: row['Region']?.trim() ?? '',
-        abv: row['ABV']?.trim() ?? '',
-        drinkWindowStart: parseInt2(row['Drink Window Start']),
-        drinkWindowEnd: parseInt2(row['Drink Window End']),
-        description: null,
-        collectionNotes: '',
-        bottles: [],
-      });
-    }
-
-    const wine = wineMap.get(key)!;
-    const bottleId = row['Bottle Code']?.trim() || row['Barcode']?.trim() || `b${wine.bottles.length}`;
-
-    wine.bottles.push({
-      id: bottleId,
-      cellar: row['Cellar or Fridge Name']?.trim() ?? '',
-      size: row['Size']?.trim() ?? '750ml',
-      purchasePrice: parseNum(row['Purchase Price']),
-      marketPrice: parseNum(row['Market Price (USD)']),
-      currency: row['Currency']?.trim() || 'USD',
-      purchaseDate: row['Purchase Date']?.trim() ?? '',
-      location: row['Custom Bottle Location']?.trim() ?? '',
-      section: row['Section Name']?.trim() ?? '',
-      row: parseInt2(row['Row']),
-      column: parseInt2(row['Column']),
-      depth: parseInt2(row['Depth']),
-      addedOn: row['Added On']?.trim() ?? '',
-      personalNotes: row['Personal Notes']?.trim() ?? '',
-      bottleCode: row['Bottle Code']?.trim() ?? '',
-      barcode: row['Barcode']?.trim() ?? '',
-      consumed: false,
-    });
-  }
-
-  const wines = [...wineMap.values()];
-  for (let i = 0; i < wines.length; i += 400) {
-    const batch = db.batch();
-    for (const wine of wines.slice(i, i + 400)) {
-      batch.set(db.collection('wines').doc(wine.id), wine);
-    }
-    await batch.commit();
-  }
-  console.log(`Seeded ${wines.length} wines to Firestore.`);
+  res.json({ ok: true, message: r.text, data: r.data, uiAction: r.uiAction });
 }
 
-// --- API ---
+// ── Public ────────────────────────────────────────────────────────────────────
 
-app.get('/api/wines', async (_req, res) => {
+app.get('/api/health', (_req, res) => res.json({ ok: true, time: new Date().toISOString() }));
+
+// Auth: /api/login, /api/logout, /api/me, OAuth 2.1 endpoints + discovery
+installAuthRoutes(app, db, cfg);
+
+// ── MCP over Streamable HTTP (bearer token from the OAuth flow) ──────────────
+
+const mcpGuard = requireBearer(cfg);
+
+async function handleMcp(req: Request, res: Response): Promise<void> {
+  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+  const server = createWineMcpServer(ctxFor(req));
+  res.on('close', () => {
+    transport.close().catch(() => {});
+    server.close().catch(() => {});
+  });
   try {
-    const snap = await db.collection('wines').get();
-    const wines = snap.docs.map((doc) => {
-      const d = doc.data() as WineDoc;
-      const active = d.bottles.filter((b) => !b.consumed);
-      const marketValue = active.reduce((s, b) => s + (b.marketPrice ?? 0), 0);
-      return {
-        id: d.id,
-        name: d.name,
-        vintage: d.vintage,
-        wineType: d.wineType,
-        grapes: d.grapes,
-        producer: d.producer,
-        country: d.country,
-        region: d.region,
-        abv: d.abv,
-        drinkWindowStart: d.drinkWindowStart,
-        drinkWindowEnd: d.drinkWindowEnd,
-        bottleCount: active.length,
-        marketValue,
-        hasDescription: !!d.description,
-      };
-    });
-    wines.sort((a, b) => a.producer.localeCompare(b.producer) || a.name.localeCompare(b.name));
+    await server.connect(transport);
+    await transport.handleRequest(req, res, req.body);
+  } catch (err) {
+    console.error('MCP request failed', err);
+    if (!res.headersSent) res.status(500).json({ error: 'MCP request failed' });
+  }
+}
+
+app.post('/mcp', mcpGuard, handleMcp);
+app.get('/mcp', mcpGuard, handleMcp);
+app.delete('/mcp', mcpGuard, (_req, res) => res.status(200).json({ ok: true }));
+
+// ── Owner API (session cookie from the web app, or a bearer token) ───────────
+
+const guard = requireOwner(cfg);
+
+app.get('/api/wines', guard, async (_req, res) => {
+  try {
+    const wines = (await getAllWines(db)).map(summarize);
+    wines.sort((a, b) => a.producer.localeCompare(b.producer) || a.name.localeCompare(b.name) || a.vintage - b.vintage);
     res.json(wines);
   } catch (err) {
     console.error(err);
@@ -182,21 +92,22 @@ app.get('/api/wines', async (_req, res) => {
   }
 });
 
-app.get('/api/wines/:id', async (req, res) => {
+app.get('/api/wines/:id', guard, async (req, res) => {
   try {
-    const doc = await db.collection('wines').doc(req.params.id).get();
-    if (!doc.exists) {
+    const wine = await getWineById(db, req.params.id);
+    if (!wine) {
       res.status(404).json({ error: 'Wine not found' });
       return;
     }
-    res.json(doc.data());
+    const tastings = (await getTastings(db)).filter((t) => t.wineId === wine.id);
+    res.json({ ...wine, tastings });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Failed to fetch wine' });
   }
 });
 
-app.post('/api/wines/:id/description', async (req, res) => {
+app.post('/api/wines/:id/description', guard, async (req, res) => {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     res.status(503).json({ error: 'ANTHROPIC_API_KEY not configured.' });
@@ -214,7 +125,6 @@ app.post('/api/wines/:id/description', async (req, res) => {
       res.json({ description: wine.description });
       return;
     }
-
     const client = new Anthropic({ apiKey });
     const message = await client.messages.create({
       model: 'claude-haiku-4-5-20251001',
@@ -252,7 +162,6 @@ Brief background on the winery and their style (2-3 sentences).`,
         },
       ],
     });
-
     const description = message.content[0].type === 'text' ? message.content[0].text : '';
     await ref.update({ description });
     res.json({ description });
@@ -262,245 +171,186 @@ Brief background on the winery and their style (2-3 sentences).`,
   }
 });
 
-app.patch('/api/wines/:id/bottles/:bottleId/consume', async (req, res) => {
+app.patch('/api/wines/:id/bottles/:bottleId/consume', guard, async (req, res) => {
+  sendTool(res, await runTool('mark_consumed', { wine: req.params.id, bottle_id: req.params.bottleId }, ctxFor(req)));
+});
+
+app.post('/api/wines/:id/bottles/:bottleId/rate', guard, async (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  sendTool(
+    res,
+    await runTool(
+      'rate_wine',
+      { wine: req.params.id, bottle_id: req.params.bottleId, rating: b.rating, liked: b.liked, notes: b.notes, would_buy_again: b.wouldBuyAgain },
+      ctxFor(req),
+    ),
+  );
+});
+
+app.patch('/api/wines/:id/bottles/:bottleId/price', guard, async (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  sendTool(
+    res,
+    await runTool('update_bottle_price', { wine: req.params.id, bottle_id: req.params.bottleId, price: b.price, currency: b.currency, kind: b.kind }, ctxFor(req)),
+  );
+});
+
+app.patch('/api/wines/:id/bottles/:bottleId/relocate', guard, async (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  sendTool(
+    res,
+    await runTool(
+      'set_bottle_location',
+      { wine: req.params.id, bottle_id: req.params.bottleId, fridge: b.fridge ?? b.cellar, shelf: b.shelf, position: b.position ?? b.column, depth: b.depth },
+      ctxFor(req),
+    ),
+  );
+});
+
+app.delete('/api/wines/:id/bottles/:bottleId', guard, async (req, res) => {
+  sendTool(res, await runTool('remove_bottle', { wine: req.params.id, bottle_id: req.params.bottleId }, ctxFor(req)));
+});
+
+app.patch('/api/wines/:id/notes', guard, async (req, res) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  sendTool(res, await runTool('add_wine_notes', { wine: req.params.id, notes: b.notes, replace: true }, ctxFor(req)));
+});
+
+app.get('/api/fridges', guard, async (_req, res) => {
   try {
-    const ref = db.collection('wines').doc(req.params.id);
-    const doc = await ref.get();
-    if (!doc.exists) {
-      res.status(404).json({ error: 'Wine not found' });
-      return;
-    }
-    const wine = doc.data() as WineDoc;
-    const bottles = wine.bottles.map((b) =>
-      b.id === req.params.bottleId ? { ...b, consumed: true } : b
-    );
-    await ref.update({ bottles });
-    res.json({ ok: true });
+    const [fridges, wines] = await Promise.all([getFridges(db), getAllWines(db)]);
+    res.json(fridges.map((f) => ({ ...f, occupied: occupancyFor(wines, f.name).length })));
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Failed to update bottle' });
+    res.status(500).json({ error: 'Failed to fetch fridges' });
   }
 });
 
-app.patch('/api/wines/:id/bottles/:bottleId/price', async (req, res) => {
-  const { price, currency } = req.body as { price: number; currency?: string };
+app.post('/api/fridges', guard, async (req, res) => {
+  sendTool(res, await runTool('save_fridge', (req.body ?? {}) as Record<string, unknown>, ctxFor(req)));
+});
+
+/** Occupancy grid for one fridge (web rack view). */
+app.get('/api/rack', guard, async (req, res) => {
   try {
-    const ref = db.collection('wines').doc(req.params.id);
-    const doc = await ref.get();
-    if (!doc.exists) {
-      res.status(404).json({ error: 'Wine not found' });
-      return;
-    }
-    const wine = doc.data() as WineDoc;
-    const bottles = wine.bottles.map((b) =>
-      b.id === req.params.bottleId
-        ? { ...b, purchasePrice: price, currency: currency ?? b.currency }
-        : b
-    );
-    await ref.update({ bottles });
-    res.json({ ok: true });
+    const name = String(req.query.fridge ?? req.query.cellar ?? '');
+    const fridge = (name ? await findFridge(db, name) : null) ?? (await getFridges(db))[0];
+    const wines = await getAllWines(db);
+    res.json({ fridge, slots: occupancyFor(wines, fridge.name) });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Failed to update price' });
+    res.status(500).json({ error: 'Failed to fetch rack' });
   }
 });
 
-app.patch('/api/wines/:id/notes', async (req, res) => {
-  const { notes } = req.body as { notes: string };
+/** Everything the 3D locate page needs. */
+app.get('/api/locate/:wineId/:bottleId', guard, async (req, res) => {
   try {
-    const ref = db.collection('wines').doc(req.params.id);
-    const doc = await ref.get();
-    if (!doc.exists) {
+    const wine = await getWineById(db, req.params.wineId);
+    if (!wine) {
       res.status(404).json({ error: 'Wine not found' });
       return;
     }
-    await ref.update({ collectionNotes: notes });
-    res.json({ ok: true });
+    const bottle = wine.bottles.find((b) => b.id === req.params.bottleId) ?? activeBottles(wine)[0];
+    if (!bottle) {
+      res.status(404).json({ error: 'Bottle not found' });
+      return;
+    }
+    const fridge = (await findFridge(db, bottle.cellar)) ?? (await getFridges(db))[0];
+    const wines = await getAllWines(db);
+    const shelf = shelfOf(bottle);
+    res.json({
+      wine: summarize(wine),
+      bottle: { ...bottle, shelf },
+      locationText: describeLocation(bottle),
+      fridge,
+      occupied: occupancyFor(wines, fridge.name),
+      highlight: shelf && bottle.column ? { shelf, column: bottle.column } : null,
+    });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Failed to update notes' });
+    res.status(500).json({ error: 'Failed to locate bottle' });
   }
 });
 
-app.post('/api/advisor', async (req, res) => {
-  const { question } = req.body as { question: string };
+app.get('/api/tastings', guard, async (_req, res) => res.json(await getTastings(db)));
+app.get('/api/preferences', guard, async (_req, res) => res.json(await getPreferences(db)));
+
+// ── In-app agent (same tools, Anthropic tool-use loop) ───────────────────────
+
+app.post('/api/agent', guard, async (req, res) => {
+  const { messages } = req.body as { messages: Anthropic.MessageParam[] };
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
-    res.status(503).json({ error: 'ANTHROPIC_API_KEY not configured on the server.' });
+    res.status(503).json({ error: 'ANTHROPIC_API_KEY not configured' });
     return;
   }
-  if (!question) {
-    res.status(400).json({ error: 'Missing question' });
+  if (!messages?.length) {
+    res.status(400).json({ error: 'messages required' });
     return;
   }
+  const client = new Anthropic({ apiKey });
+  const ctx = ctxFor(req);
+  const tools: Anthropic.Tool[] = TOOLS.map((t) => ({
+    name: t.name,
+    description: t.description,
+    input_schema: t.inputSchema as Anthropic.Tool.InputSchema,
+  }));
+  const system = `${SERVER_INSTRUCTIONS}\n\nYou are chatting inside the Invintory web app. Photos the user attaches are visible to you directly. When a tool returns a fridge picture the app renders it in 3D, so just describe the location in words.`;
 
   try {
-    const snap = await db.collection('wines').get();
-    const lines: string[] = [];
-    for (const doc of snap.docs) {
-      const d = doc.data() as WineDoc;
-      const active = d.bottles.filter((b) => !b.consumed);
-      if (active.length === 0) continue;
-      const value = active.reduce((s, b) => s + (b.marketPrice ?? 0), 0);
-      const window =
-        d.drinkWindowStart && d.drinkWindowEnd
-          ? ` (drink ${d.drinkWindowStart}–${d.drinkWindowEnd})`
-          : '';
-      lines.push(
-        `- "${d.name}" ${d.vintage}, ${d.wineType}, ${d.region}${window} — ${active.length} bottle(s)${value > 0 ? `, ~$${value.toFixed(0)} market value` : ''}`
-      );
+    let msgs = [...messages];
+    let uiAction: unknown;
+    for (let i = 0; i < 10; i++) {
+      const response = await client.messages.create({ model: 'claude-sonnet-4-6', max_tokens: 2048, system, tools, messages: msgs });
+      if (response.stop_reason !== 'tool_use') {
+        const text = response.content.find((b) => b.type === 'text');
+        res.json({ message: text?.type === 'text' ? text.text : '', messages: msgs, uiAction });
+        return;
+      }
+      msgs = [...msgs, { role: 'assistant', content: response.content }];
+      const results: Anthropic.ToolResultBlockParam[] = [];
+      for (const block of response.content) {
+        if (block.type !== 'tool_use') continue;
+        const r = await runTool(block.name, block.input as Record<string, unknown>, ctx);
+        if (r.uiAction) uiAction = r.uiAction;
+        results.push({ type: 'tool_result', tool_use_id: block.id, content: r.text, is_error: !!r.isError });
+      }
+      msgs = [...msgs, { role: 'user', content: results }];
     }
-    const collectionSummary = lines.join('\n');
-
-    const client = new Anthropic({ apiKey });
-    const message = await client.messages.create({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 1024,
-      system: `You are a knowledgeable sommelier and wine advisor with access to a user's personal wine collection.
-Answer questions about wine choices, food pairings, which bottles to open for occasions, aging potential, tasting notes, and general wine advice.
-Be specific about wines in the collection when relevant. Keep responses concise and practical.`,
-      messages: [
-        {
-          role: 'user',
-          content: `Here is my wine collection:\n\n${collectionSummary}\n\n${question}`,
-        },
-      ],
-    });
-
-    const text = message.content[0].type === 'text' ? message.content[0].text : '';
-    res.json({ answer: text });
+    res.status(500).json({ error: 'Agent loop exceeded' });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Failed to get response from Claude.' });
+    res.status(500).json({ error: 'Agent error' });
   }
 });
 
-// Delete a bottle permanently
-app.delete('/api/wines/:id/bottles/:bottleId', async (req, res) => {
-  try {
-    const ref = db.collection('wines').doc(req.params.id);
-    const doc = await ref.get();
-    if (!doc.exists) { res.status(404).json({ error: 'Wine not found' }); return; }
-    const wine = doc.data() as WineDoc;
-    const bottles = wine.bottles.filter((b) => b.id !== req.params.bottleId);
-    await ref.update({ bottles });
-    res.json({ ok: true });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Failed to delete bottle' });
-  }
-});
-
-// Relocate a bottle to a new position
-app.patch('/api/wines/:id/bottles/:bottleId/relocate', async (req, res) => {
-  const { cellar, location, section, row, column, depth } = req.body as {
-    cellar?: string; location?: string; section?: string;
-    row?: number; column?: number; depth?: number;
-  };
-  try {
-    const ref = db.collection('wines').doc(req.params.id);
-    const doc = await ref.get();
-    if (!doc.exists) { res.status(404).json({ error: 'Wine not found' }); return; }
-    const wine = doc.data() as WineDoc;
-    const bottles = wine.bottles.map((b) =>
-      b.id === req.params.bottleId
-        ? {
-            ...b,
-            cellar: cellar ?? b.cellar,
-            location: location ?? b.location,
-            section: section ?? b.section,
-            row: row ?? b.row,
-            column: column ?? b.column,
-            depth: depth ?? b.depth,
-          }
-        : b
-    );
-    await ref.update({ bottles });
-    res.json({ ok: true });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Failed to relocate bottle' });
-  }
-});
-
-// Rack view — all active bottle positions in a given cellar + location
-app.get('/api/rack', async (req, res) => {
-  const { cellar, location } = req.query as { cellar: string; location?: string };
-  if (!cellar) { res.status(400).json({ error: 'cellar param required' }); return; }
-  try {
-    const snap = await db.collection('wines').get();
-    const slots: Array<{
-      bottleId: string; wineId: string; wineName: string; vintage: number;
-      size: string; barcode: string; bottleCode: string; addedOn: string;
-      cellar: string; location: string; section: string;
-      row: number | null; column: number | null; depth: number | null;
-    }> = [];
-
-    snap.docs.forEach((doc) => {
-      const d = doc.data() as WineDoc;
-      d.bottles
-        .filter((b) => !b.consumed && b.cellar === cellar && (!location || b.location === location))
-        .forEach((b) => {
-          slots.push({
-            bottleId: b.id,
-            wineId: d.id,
-            wineName: d.name,
-            vintage: d.vintage,
-            size: b.size,
-            barcode: b.barcode,
-            bottleCode: b.bottleCode,
-            addedOn: b.addedOn,
-            cellar: b.cellar,
-            location: b.location,
-            section: b.section,
-            row: b.row,
-            column: b.column,
-            depth: b.depth,
-          });
-        });
-    });
-
-    const maxRow = Math.max(1, ...slots.map((s) => s.row ?? 0));
-    const maxCol = Math.max(1, ...slots.map((s) => s.column ?? 0));
-    res.json({ cellar, location: location ?? '', maxRow, maxCol, slots });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Failed to fetch rack data' });
-  }
-});
-
-// MCP over HTTP — stateless, one transport per request (works on Cloud Run)
-app.post('/mcp', async (req, res) => {
-  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-  const mcpServer = createWineMcpServer(db);
-  await mcpServer.connect(transport);
-  await transport.handleRequest(req, res, req.body);
-  res.on('close', () => mcpServer.close().catch(() => {}));
-});
-
-app.get('/mcp', async (req, res) => {
-  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-  const mcpServer = createWineMcpServer(db);
-  await mcpServer.connect(transport);
-  await transport.handleRequest(req, res);
-  res.on('close', () => mcpServer.close().catch(() => {}));
-});
+// ── Static SPA (production) ───────────────────────────────────────────────────
 
 if (process.env.NODE_ENV === 'production') {
   const distPath = path.resolve(__dirname, '../dist');
-  app.use(express.static(distPath));
-  app.get('*', (_req, res) => {
+  app.use(express.static(distPath, { index: false, maxAge: '1h' }));
+  app.get('*', (req, res, next) => {
+    if (/^\/(api|mcp|oauth|\.well-known)(\/|$)/.test(req.path)) {
+      next();
+      return;
+    }
     res.sendFile(path.join(distPath, 'index.html'));
   });
 }
 
+app.use((req, res) => res.status(404).json({ error: `No route for ${req.method} ${req.path}` }));
+
+// ── Startup ───────────────────────────────────────────────────────────────────
+
 (async () => {
   try {
-    await seedIfEmpty();
+    await seedIfEmpty(db);
+    await seedFridges(db);
+    const applied = await runMigrations(db);
+    if (applied.length) console.log(`Migrations applied: ${applied.join(', ')}`);
   } catch (err) {
-    console.error('Seed error:', err);
+    console.error('Startup data error:', err);
   }
-  app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-  });
+  app.listen(PORT, () => console.log(`Invintory server listening on ${PORT}`));
 })();

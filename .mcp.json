@@ -2,10 +2,13 @@
   "mcpServers": {
     "wine-inventory": {
       "command": "node",
-      "args": ["dist-server/mcp.js"],
+      "args": [
+        "dist-server/mcp.js"
+      ],
       "env": {
         "GOOGLE_CLOUD_PROJECT": "invintory-495823",
-        "GOOGLE_APPLICATION_CREDENTIALS": "C:\\Users\\Lord\\AppData\\Roaming\\gcloud\\application_default_credentials.json"
+        "GOOGLE_APPLICATION_CREDENTIALS": "C:\\Users\\Lord\\AppData\\Roaming\\gcloud\\application_default_credentials.json",
+        "PUBLIC_BASE_URL": "https://invintory-d6yd2jjywa-uc.a.run.app"
       }
     }
   }

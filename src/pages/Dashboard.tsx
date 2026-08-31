@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { Package, Wine, DollarSign, Clock, Sparkles } from 'lucide-react';
+import { Package, Wine, DollarSign, Clock, Sparkles, type LucideIcon } from 'lucide-react';
 import { useWines, drinkWindowStatus } from '../hooks/useCollection';
 
 function StatCard({
@@ -10,7 +10,7 @@ function StatCard({
 }: {
   label: string;
   value: number | string;
-  icon: React.ElementType;
+  icon: LucideIcon;
   accent: string;
 }) {
   return (

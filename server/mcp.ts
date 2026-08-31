@@ -1,15 +1,19 @@
 import 'dotenv/config';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import admin from 'firebase-admin';
+import { getDb } from './db';
 import { createWineMcpServer } from './wine-mcp-server';
 
-admin.initializeApp({ projectId: process.env.GOOGLE_CLOUD_PROJECT || 'invintory-495823' });
-const db = admin.firestore();
-
+/**
+ * Local stdio MCP entry (Claude Code / Claude Desktop on this machine).
+ * Authenticates to Firestore with gcloud Application Default Credentials;
+ * no passphrase is involved because nothing is exposed to the network.
+ */
 async function main() {
-  const server = createWineMcpServer(db);
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  const server = createWineMcpServer({
+    db: getDb(),
+    baseUrl: (process.env.PUBLIC_BASE_URL || 'https://invintory-d6yd2jjywa-uc.a.run.app').replace(/\/+$/, ''),
+  });
+  await server.connect(new StdioServerTransport());
   console.error('Wine inventory MCP server running on stdio');
 }
 

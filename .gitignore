@@ -5,3 +5,6 @@ dist-server/
 .env.local
 .env.production
 *.log
+.claude/
+scripts/*.png
+*.png
